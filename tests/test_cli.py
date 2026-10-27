@@ -73,7 +73,6 @@ def test_status_on_empty_store(project):
     "args",
     [
         ["ask", "what changed?"],
-        ["report", "week"],
         ["serve"],
     ],
 )

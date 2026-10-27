@@ -45,6 +45,7 @@ from cairnlab.store.models import format_ts, normalize_ts, utc_now
 from cairnlab.synth.claims import check_faithfulness
 from cairnlab.synth.claims import summarize as summarize_claims
 from cairnlab.synth.entry import save_faithfulness, write_entry
+from cairnlab.synth.report import write_report as write_weekly
 from cairnlab.voice.record import MAX_SECONDS as VOICE_MAX_SECONDS
 from cairnlab.voice.record import RATE as VOICE_RATE
 from cairnlab.voice.record import Toggle, to_wav
@@ -827,9 +828,41 @@ def ask(question: Annotated[str, typer.Argument(help="Question about the log.")]
 
 
 @app.command()
-def report(period: Annotated[str, typer.Argument(help="week")] = "week") -> None:
-    """Write the weekly supervisor update."""
-    _todo("report")
+def report(
+    period: Annotated[str, typer.Argument(help="week")] = "week",
+    start: Annotated[
+        str | None, typer.Option(help="First day (YYYY-MM-DD); default: the last 7 days.")
+    ] = None,
+) -> None:
+    """Write the weekly supervisor update (under 300 words) from the week's entries."""
+    if period != "week":
+        err.print("Only 'cairn report week' is supported.")
+        raise typer.Exit(2)
+    home = _require_home()
+    conn = db.connect(config.db_path(home))
+    db.migrate(conn)
+    tz = config.timezone(home)
+    first = _parse_day(start, tz) if start else None
+    try:
+        client = Client(home=home)
+    except LLMError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    usage = home / "usage.jsonl"
+    before = usage.stat().st_size if usage.is_file() else 0
+    try:
+        rep = write_weekly(conn, home, client, today=datetime.now(tz).date(), start=first, tz=tz)
+    except LLMError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    finally:
+        conn.close()
+    out.print(rep.text, markup=False, highlight=False, soft_wrap=True)
+    if rep.path:
+        err.print(
+            f"Saved to {rep.path} ({len(rep.text.split())} words,"
+            f" model cost ${_usage_cost(home, before):.4f})"
+        )
 
 
 @app.command()

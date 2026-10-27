@@ -80,3 +80,7 @@ CLAIMS = _obj(
         ),
     }
 )
+
+_LIST = {"type": "array", "items": _STR}
+
+REPORT = _obj(subject=_STR, moved=_LIST, blocked=_LIST, decisions=_LIST, next_week=_LIST)
