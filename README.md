@@ -6,8 +6,9 @@ turn a day of raw events into a dated, provenance-linked notebook entry.
 
 Built for the Meta Global AI Developer Hackathon (Indie track, "Build for Your World").
 
-> Status: capture, snapshots, provenance linking, `cairn run` and daily entries work;
-> trace, notes, the weekly report and the reproduce agent are in progress.
+> Status: capture, snapshots, provenance, `cairn run`, notes (typed and voice), trace,
+> multi-machine sync and daily entries work; the reproduce agent and weekly report are
+> in progress.
 
 ## Install
 
@@ -61,6 +62,64 @@ which Muse Spark reads once per script version. Readset sends the script's sourc
 the Meta Model API; set `readset = false` under `[link]` in `.cairn/config.toml` (or
 `CAIRN_READSET=0`) to keep scripts local. Model calls and their cost are logged to
 `.cairn/usage.jsonl`.
+
+## Notes: the *why*
+
+```bash
+cairn note "cutoff 1.0 truncates the tail; trying 1.2"   # pinned to your last command
+cairn note --run R:01J... "this is the run I meant"
+cairn note                                               # speak instead (push-to-talk)
+```
+
+A note attaches to the last command run in the same terminal (or the last one on the
+machine within an hour). Voice notes record from the default microphone until you
+press Enter or run `cairn note` again, then are transcribed by
+`muse-voice-transcribe-1.0`; the audio stays in `.cairn/notes/`. They need
+`pip install -e ".[voice]"` and PortAudio (`sudo apt install libportaudio2`).
+
+To take voice notes from anywhere, add a GNOME custom shortcut (Settings → Keyboard →
+Custom Shortcuts) whose command is:
+
+```bash
+env CAIRN_USER=alice CAIRN_HOME=/path/to/project/.cairn /path/to/.venv/bin/cairn note
+```
+
+Press it once to start recording and again to stop; a desktop notification shows
+the transcript.
+
+## Trace: where did this file come from?
+
+```bash
+cairn trace figs/fit2.png            # the chain of runs and inputs, back to raw files
+cairn trace params.txt --at 2026-10-28T09:00:00Z   # an older version
+cairn trace figs/fit2.png --json     # machine-readable
+```
+
+It ends with the exact command that made the file, the git commit and environment it
+ran under, and whether each input on disk still matches what was used.
+
+## Several machines
+
+The HP is the hub; other machines (spokes) record into `~/.cairn-<user>` and are
+pulled over SSH. Define them in `~/.config/cairn/hosts.toml`:
+
+```toml
+[workstation]
+ssh = "labuser"              # any SSH target; ~/.ssh/config does the rest
+home = "~/.cairn-alice"   # CAIRN_HOME on that machine
+```
+
+```bash
+cairn sync workstation       # pull events, stored files and job logs, then ingest
+cairn sync workstation --dry-run
+```
+
+Sync only reads from the spoke (no deletes, nothing written there). On a shared
+account, keep everything under `~/.cairn-<user>`: install Cairn into a venv there
+(`python3 -m venv ~/.cairn-alice/venv`), then in each terminal
+`export CAIRN_USER=alice CAIRN_HOME=~/.cairn-alice CAIRN_HOST=workstation` and
+`eval "$(~/.cairn-alice/venv/bin/cairn activate)"`. Nothing touches the account's
+dotfiles. Run `cairn watch --root <project>` there to fingerprint files too.
 
 ## Notebook entries
 
