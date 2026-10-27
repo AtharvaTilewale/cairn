@@ -11,7 +11,7 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -21,7 +21,15 @@ from cairnlab.capture.envsnap import EnvSnapshotter
 from cairnlab.capture.gitsnap import GitSnapshotter
 from cairnlab.provenance.objects import has_object
 from cairnlab.store import db, repo
-from cairnlab.store.models import CmdEvent, FileEvent, RunEnd, RunStart, utc_now
+from cairnlab.store.models import (
+    CmdEvent,
+    FileEvent,
+    NoteEvent,
+    RunEnd,
+    RunStart,
+    format_ts,
+    utc_now,
+)
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +144,7 @@ class IngestStats:
     lines: int = 0
     runs: int = 0  # cmd events and background-run starts stored
     files_seen: int = 0  # file events stored
+    notes: int = 0
     earliest: str | None = None  # earliest time any newly stored event touches
     duplicates: int = 0
     malformed: int = 0
@@ -155,7 +164,15 @@ class _Pass:
             self.stats.earliest = ts
 
 
-MODELS = {"cmd": CmdEvent, "file": FileEvent, "run_start": RunStart, "run_end": RunEnd}
+MODELS = {
+    "cmd": CmdEvent,
+    "file": FileEvent,
+    "run_start": RunStart,
+    "run_end": RunEnd,
+    "note": NoteEvent,
+}
+NOTE_SESSION_WINDOW = timedelta(hours=6)  # a note explains a run at most this long before it
+NOTE_HOST_WINDOW = timedelta(hours=1)
 
 
 def ingest(
@@ -180,6 +197,7 @@ def ingest(
             _ingest_file(ctx, path, offsets.get(path.name, 0))
     if lost_check_host:
         stats.lost = _mark_lost(conn, lost_check_host)
+    _attach_notes(conn)
     return stats
 
 
@@ -242,6 +260,7 @@ def _ingest_line(ctx: _Pass, raw: bytes, where: str) -> None:
         FileEvent: _on_file,
         RunStart: _on_run_start,
         RunEnd: _on_run_end,
+        NoteEvent: _on_note,
     }[type(event)](ctx, event)
     if not stored:
         stats.duplicates += 1
@@ -346,6 +365,60 @@ def _finish_run(ctx: _Pass, event: RunEnd) -> None:
         "SELECT ts_start FROM runs WHERE id = ?", (event.run_id,)
     ).fetchone()
     ctx.touch(start)
+
+
+def _on_note(ctx: _Pass, event: NoteEvent) -> bool:
+    if (
+        _insert_event(ctx.conn, "note", event.ts, event.host, event.model_dump(), event_id=event.id)
+        is None
+    ):
+        return False
+    ctx.conn.execute(
+        "INSERT INTO notes (id, ts, run_id, text, source, audio_path) VALUES (?, ?, NULL, ?, ?, ?)",
+        (event.id, event.ts, event.text, event.source, event.audio),
+    )
+    ctx.stats.notes += 1
+    ctx.touch(event.ts)
+    return True
+
+
+def _attach_notes(conn: sqlite3.Connection) -> None:
+    """Pin each unattached note to the run it explains.
+
+    Notes and runs live in different files and arrive in any order, so this runs after
+    every ingest. The explicit ``run`` wins; else the latest run of the same terminal
+    session that started before the note (within 6 h); else the latest run on the
+    same host by the same user (within 1 h).
+    """
+    rows = conn.execute(
+        "SELECT n.id, n.ts, e.payload FROM notes n JOIN events e ON e.id = n.id"
+        " WHERE n.run_id IS NULL"
+    ).fetchall()
+    for note_id, ts, payload in rows:
+        p = json.loads(payload)
+        run_id = None
+        explicit = (p.get("run") or "").removeprefix("R:")
+        if explicit and conn.execute("SELECT 1 FROM runs WHERE id = ?", (explicit,)).fetchone():
+            run_id = explicit
+        if run_id is None and p.get("session"):
+            run_id = _latest_run(conn, "session = ?", p["session"], ts, NOTE_SESSION_WINDOW)
+        if run_id is None:
+            run_id = _latest_run(
+                conn, "host = ? AND user = ?", (p["host"], p["user"]), ts, NOTE_HOST_WINDOW
+            )
+        if run_id is not None:
+            conn.execute("UPDATE notes SET run_id = ? WHERE id = ?", (run_id, note_id))
+
+
+def _latest_run(conn, where: str, args, ts: str, window: timedelta) -> str | None:
+    args = args if isinstance(args, tuple) else (args,)
+    earliest = format_ts(datetime.fromisoformat(ts) - window)
+    row = conn.execute(
+        f"SELECT id FROM runs WHERE {where} AND ts_start <= ? AND ts_start >= ?"
+        " ORDER BY ts_start DESC LIMIT 1",
+        (*args, ts, earliest),
+    ).fetchone()
+    return row[0] if row else None
 
 
 def _mark_lost(conn: sqlite3.Connection, host: str) -> int:

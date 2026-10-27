@@ -73,7 +73,6 @@ def test_status_on_empty_store(project):
     "args",
     [
         ["sync", "cluster"],
-        ["note", "why I changed the cutoff"],
         ["trace", "fig.png"],
         ["reproduce", "fig.png", "--yes"],
         ["ask", "what changed?"],

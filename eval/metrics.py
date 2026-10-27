@@ -72,6 +72,13 @@ def compute(project: Path) -> dict:
     ).fetchone()
 
     edge_m = _edge_metrics(conn, pairs, root)
+    run_of = {s["i"]: r["id"] for s, r in pairs}
+    notes = dict(conn.execute("SELECT text, run_id FROM notes").fetchall())
+    placed = [
+        n
+        for n in key["notes"]
+        if n["text"] in notes and notes[n["text"]] == run_of.get(n["explains_step"])
+    ]
     entry_m = _entry_metrics(conn, key, pairs)
 
     m = {
@@ -89,6 +96,8 @@ def compute(project: Path) -> dict:
         "fit_json_versions": rel.get("results/fit.json", 0),
         "small_versions_stored": f"{stored[0] or 0}/{stored[1]}",
         "missing_runs": [s["cmd"] for s in expected if s not in [p for p, _ in pairs]],
+        "notes_captured": f"{sum(n['text'] in notes for n in key['notes'])}/{len(key['notes'])}",
+        "note_placement": f"{len(placed)}/{len(key['notes'])}",
         **edge_m,
         **entry_m,
     }
@@ -101,6 +110,7 @@ def compute(project: Path) -> dict:
         and not leaks
         and len(files_found) == len(generated)
         and not ignored_leaks
+        and len(placed) == len(key["notes"])
     )
     return m
 

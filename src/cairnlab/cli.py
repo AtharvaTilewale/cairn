@@ -149,6 +149,16 @@ def status() -> None:
             table.add_row(r.ts_start, r.host, exit_code, r.cmd, style=style)
         out.print(table)
 
+    notes = conn.execute(
+        "SELECT n.ts, n.text, r.cmd FROM notes n LEFT JOIN runs r ON r.id = n.run_id"
+        " ORDER BY n.ts DESC LIMIT 5"
+    ).fetchall()
+    if notes:
+        table = Table("time (UTC)", "note", "about", title="Recent notes")
+        for ts, text, about in reversed(notes):
+            table.add_row(ts, text, about or "-")
+        out.print(table)
+
     offsets = repo.ingest_offsets(conn)
     events = config.events_dir(home)
     pending = 0
@@ -210,7 +220,8 @@ def ingest() -> None:
     conn.close()
     out.print(
         f"Ingested {stats.runs} new runs and {stats.files_seen} file events"
-        f" from {stats.lines} lines in {stats.files} files"
+        + (f", {stats.notes} notes" if stats.notes else "")
+        + f" from {stats.lines} lines in {stats.files} files"
         f" ({stats.duplicates} duplicates, {stats.malformed} malformed,"
         f" {stats.unsupported} unsupported).",
         soft_wrap=True,
@@ -395,9 +406,35 @@ def run(
 
 
 @app.command()
-def note(text: Annotated[list[str] | None, typer.Argument(help="Note text.")] = None) -> None:
-    """Add a typed note; with no text, record a voice note."""
-    _todo("note")
+def note(
+    text: Annotated[list[str] | None, typer.Argument(help="Note text.")] = None,
+    run_id: Annotated[
+        str | None, typer.Option("--run", help="The run it is about (default: the last one).")
+    ] = None,
+) -> None:
+    """Record why: a note pinned to the last command in this terminal (or --run R:<id>)."""
+    words = " ".join(text or []).strip()
+    if not words:
+        _todo("note (voice)")
+        return
+    home = config.find_home()
+    if home is None:
+        err.print("[red]No Cairn store:[/red] set CAIRN_HOME or run [bold]cairn init[/bold].")
+        raise typer.Exit(1)
+    user = _cairn_user()
+    host = config.local_host()
+    event = {
+        "type": "note",
+        "id": str(ULID()),
+        "session": os.environ.get("CAIRN_SESSION"),
+        "ts": utc_now(),
+        "text": words,
+        "source": "typed",
+    }
+    if run_id:
+        event["run"] = run_id if run_id.startswith("R:") else f"R:{run_id}"
+    EventWriter(config.events_dir(home), host, user, suffix="note").write(event)
+    err.print("Noted.")
 
 
 def _parse_day(text: str, tz) -> date:

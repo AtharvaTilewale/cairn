@@ -127,6 +127,24 @@ class RunEnd(BaseModel):
     wrapper: dict = Field(default_factory=dict)
 
 
+class NoteEvent(BaseModel):
+    """Why: a typed or voice note, pinned at ingest to the run it explains."""
+
+    model_config = ConfigDict(extra="allow")
+
+    v: Literal[1]
+    type: Literal["note"]
+    id: RunId
+    session: str | None = None
+    host: NonEmpty
+    user: NonEmpty
+    ts: Timestamp
+    text: str
+    source: Literal["typed", "voice"] = "typed"
+    audio: str | None = None
+    run: str | None = None  # explicit "R:<id>" the note is about
+
+
 class Event(BaseModel):
     """A row of the ``events`` table."""
 
