@@ -175,6 +175,14 @@ def status() -> None:
             table.add_row(ts, text, about or "-")
         out.print(table)
 
+    usage = _usage_summary(home)
+    if usage:
+        table = Table("model", "calls", "cost (USD)", "generation speed", title="Model usage")
+        for model, (n, cost, speeds) in sorted(usage.items()):
+            speed = f"{sum(speeds) / len(speeds):.1f} tokens/s" if speeds else "-"
+            table.add_row(model, str(n), f"{cost:.4f}", speed)
+        out.print(table)
+
     offsets = repo.ingest_offsets(conn)
     events = config.events_dir(home)
     pending = 0
@@ -552,6 +560,24 @@ def _parse_day(text: str, tz) -> date:
         raise typer.Exit(2) from None
 
 
+def _usage_summary(home: Path) -> dict[str, tuple[int, float, list[float]]]:
+    """model -> (calls, cost, tokens/s samples) from usage.jsonl."""
+    usage = home / "usage.jsonl"
+    out: dict[str, tuple[int, float, list[float]]] = {}
+    if not usage.is_file():
+        return out
+    for line in usage.read_text().splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        n, cost, speeds = out.get(rec.get("model", "?"), (0, 0.0, []))
+        if "tokens_per_s" in rec:
+            speeds = [*speeds, rec["tokens_per_s"]]
+        out[rec.get("model", "?")] = (n + 1, cost + rec.get("cost_usd", 0.0), speeds)
+    return out
+
+
 def _usage_cost(home: Path, since_bytes: int) -> float:
     usage = home / "usage.jsonl"
     if not usage.is_file():
@@ -561,54 +587,30 @@ def _usage_cost(home: Path, since_bytes: int) -> float:
         return sum(json.loads(line)["cost_usd"] for line in fh.read().splitlines() if line)
 
 
-@app.command()
-def entry(
-    day: Annotated[str, typer.Argument(help="today, yesterday or YYYY-MM-DD.")] = "today",
-    backend: Annotated[str, typer.Option(help="spark (Meta Model API) or glimmer.")] = "spark",
-    dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Show what would be sent; call nothing.")
-    ] = False,
-    check: Annotated[
-        bool, typer.Option("--check/--no-check", help="Verify the entry's claims afterwards.")
-    ] = True,
-) -> None:
-    """Write the day's notebook entry with Muse Spark; every claim cites the log."""
-    home = _require_home()
-    conn = db.connect(config.db_path(home))
-    db.migrate(conn)
-    tz = config.timezone(home)
-    the_day = _parse_day(day, tz)
-    root = config.project_root(home)
-    if dry_run:
-        res = write_entry(conn, home, the_day, tz=tz, root=root, backend=backend, dry_run=True)
-        out.print(res.prompt, markup=False, highlight=False, soft_wrap=True)
-        err.print(
-            f"{len(res.context.figures)} figures would be attached;"
-            f" about {len(res.prompt) // 4:,} tokens of log text."
-        )
-        return
-    try:
-        client = Client(home=home, backend=backend)
-    except LLMError as exc:
-        err.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from None
-    usage = home / "usage.jsonl"
-    before = usage.stat().st_size if usage.is_file() else 0
+QUEUE_DAYS = 14
+
+
+def _days_needing_entries(conn, tz, today: date) -> list[date]:
+    """Local days in the last QUEUE_DAYS with runs but no written entry, oldest first."""
+    have = {d for (d,) in conn.execute("SELECT day FROM entries WHERE model != 'none'")}
+    days = set()
+    for (ts,) in conn.execute("SELECT ts_start FROM runs WHERE ts_start IS NOT NULL"):
+        d = datetime.fromisoformat(ts).astimezone(tz).date()
+        if today - timedelta(days=QUEUE_DAYS) <= d <= today and d.isoformat() not in have:
+            days.add(d)
+    return sorted(days)
+
+
+def _write_one(conn, home, client, the_day, tz, root, backend, check) -> None:
     err.print(f"Writing the entry for {the_day} with {client.model}...")
-    try:
-        res = write_entry(conn, home, the_day, client=client, tz=tz, root=root, backend=backend)
-        if check and res.entry:
-            err.print("Checking its claims against the store...")
-            res.verdicts = check_faithfulness(
-                client, conn, config.objects_dir(home), res.markdown, res.prompt
-            )
-            res.faithfulness = summarize_claims(res.verdicts)
-            save_faithfulness(conn, res)
-    except LLMError as exc:
-        err.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from None
-    finally:
-        conn.close()
+    res = write_entry(conn, home, the_day, client=client, tz=tz, root=root, backend=backend)
+    if check and res.entry:
+        err.print("Checking its claims against the store...")
+        res.verdicts = check_faithfulness(
+            client, conn, config.objects_dir(home), res.markdown, res.prompt
+        )
+        res.faithfulness = summarize_claims(res.verdicts)
+        save_faithfulness(conn, res)
     out.print(f"Entry written: {res.path}")
     if res.dropped:
         out.print(f"  {len(res.dropped)} uncited or invalid items dropped (see --verbose)")
@@ -622,7 +624,75 @@ def entry(
         for v in res.verdicts:
             if v.verdict == "unsupported":
                 out.print(f"  [yellow]unsupported:[/yellow] {v.text}", soft_wrap=True)
+
+
+@app.command()
+def entry(
+    day: Annotated[str, typer.Argument(help="today, yesterday or YYYY-MM-DD.")] = "today",
+    backend: Annotated[
+        str, typer.Option(help="spark (Meta Model API) or glimmer (self-hosted, private).")
+    ] = "spark",
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show what would be sent; call nothing.")
+    ] = False,
+    check: Annotated[
+        bool, typer.Option("--check/--no-check", help="Verify the entry's claims afterwards.")
+    ] = True,
+    queue: Annotated[
+        bool,
+        typer.Option(
+            "--queue",
+            help=f"Write every day of the last {QUEUE_DAYS} that has runs"
+            " but no entry (e.g. overnight with --backend glimmer).",
+        ),
+    ] = False,
+) -> None:
+    """Write the day's notebook entry; every claim cites the log."""
+    if backend not in ("spark", "glimmer"):
+        err.print("--backend must be spark or glimmer")
+        raise typer.Exit(2)
+    home = _require_home()
+    conn = db.connect(config.db_path(home))
+    db.migrate(conn)
+    tz = config.timezone(home)
+    root = config.project_root(home)
+    days = (
+        _days_needing_entries(conn, tz, datetime.now(tz).date()) if queue else [_parse_day(day, tz)]
+    )
+    if queue and not days:
+        out.print("Every recent day with runs already has an entry.")
+        return
+    if dry_run:
+        for d in days:
+            res = write_entry(conn, home, d, tz=tz, root=root, backend=backend, dry_run=True)
+            out.print(res.prompt, markup=False, highlight=False, soft_wrap=True)
+            err.print(
+                f"{d}: {len(res.context.figures)} figures would be attached;"
+                f" about {len(res.prompt) // 4:,} tokens of log text."
+            )
+        return
+    try:
+        client = Client(home=home, backend=backend)
+    except LLMError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    usage = home / "usage.jsonl"
+    before = usage.stat().st_size if usage.is_file() else 0
+    failed = 0
+    try:
+        for d in days:
+            try:
+                _write_one(conn, home, client, d, tz, root, backend, check)
+            except LLMError as exc:
+                err.print(f"[red]{d}: {exc}[/red]")
+                failed += 1
+                if not queue:
+                    raise typer.Exit(1) from None
+    finally:
+        conn.close()
     out.print(f"  model cost: ${_usage_cost(home, before):.4f}")
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.command()

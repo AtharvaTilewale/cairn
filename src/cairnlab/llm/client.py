@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -27,7 +28,7 @@ log = logging.getLogger(__name__)
 META_BASE_URL = "https://api.meta.ai/v1"
 SPARK_MODEL = "muse-spark-1.3"
 GLIMMER_MODEL = "muse-glimmer"
-GLIMMER_DEFAULT_URL = "http://localhost:11434/v1"
+GLIMMER_DEFAULT_URL = "http://127.0.0.1:8080/v1"  # llama-server; Ollama is :11434
 GLIMMER_MIN_TEMPERATURE = 0.2  # Glimmer must never run at temperature 0
 REQUEST_TIMEOUT_S = 120.0  # per attempt; the SDK default (10 min) hides a dead network
 GLIMMER_TIMEOUT_S = 1800.0
@@ -54,6 +55,33 @@ def load_env() -> None:
         load_dotenv(user_env, override=False)
 
 
+_THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def extract_json(text: str) -> dict | None:
+    """The JSON object in a reply, tolerating reasoning text and code fences.
+
+    Self-hosted servers without a reasoning parser can return ``<think>...</think>``
+    before the answer, or wrap it in a ```json fence.
+    """
+    text = _THINK.sub("", text or "").strip()
+    try:
+        out = json.loads(text)
+        return out if isinstance(out, dict) else None
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch == "{":
+            try:
+                out, _ = decoder.raw_decode(text[i:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(out, dict):
+                return out
+    return None
+
+
 def _retryable(exc: Exception) -> bool:
     if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
         return True
@@ -78,7 +106,11 @@ class Client:
         if backend not in ("spark", "glimmer"):
             raise ValueError(f"unknown backend {backend!r} (spark or glimmer)")
         self.backend = backend
-        self.model = model or (SPARK_MODEL if backend == "spark" else GLIMMER_MODEL)
+        self.model = model or (
+            SPARK_MODEL
+            if backend == "spark"
+            else os.environ.get("CAIRN_GLIMMER_MODEL", GLIMMER_MODEL)
+        )
         if "contributor" in self.model and not allow_contributor:
             raise ContributorTierError(
                 f"{self.model} lets Meta train on inputs; it is only for synthetic eval data"
@@ -122,12 +154,9 @@ class Client:
             "json_schema": {"name": schema_name, "schema": schema, "strict": True},
         }
         text = self._call(purpose, messages, fmt, **kw)
-        try:
-            out = json.loads(text)
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise LLMError(f"{purpose}: model did not return valid JSON") from exc
-        if not isinstance(out, dict):
-            raise LLMError(f"{purpose}: model returned {type(out).__name__}, not an object")
+        out = extract_json(text)
+        if out is None:
+            raise LLMError(f"{purpose}: model did not return a JSON object")
         return out
 
     def complete(
@@ -162,7 +191,16 @@ class Client:
             if temperature is not None:
                 kwargs["temperature"] = temperature
         else:
-            kwargs["temperature"] = max(temperature or 0.6, GLIMMER_MIN_TEMPERATURE)
+            # Model card defaults: temperature 1.0, top_p 0.95, top_k 64. Reasoning cannot be
+            # switched off; its amount is the chat template's reasoning_strength.
+            kwargs["temperature"] = max(temperature or 1.0, GLIMMER_MIN_TEMPERATURE)
+            kwargs["top_p"] = 0.95
+            extra: dict[str, Any] = {"top_k": 64}
+            if reasoning_effort in ("low", "medium", "high", "xhigh"):
+                extra["chat_template_kwargs"] = {"reasoning_strength": reasoning_effort}
+            elif reasoning_effort == "minimal":
+                extra["chat_template_kwargs"] = {"reasoning_strength": "low"}
+            kwargs["extra_body"] = extra
         delay = 1.0
         for attempt in range(self.max_retries + 1):
             t0 = time.perf_counter()
@@ -200,6 +238,9 @@ class Client:
             "cost_usd": round(cost, 8),
             "latency_s": round(latency, 2),
         }
+        if self.backend == "glimmer" and latency > 0:
+            # Generation speed on our own hardware (includes prompt processing).
+            record["tokens_per_s"] = round(completion / latency, 2)
         if self.home is None:
             return
         try:

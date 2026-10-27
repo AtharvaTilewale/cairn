@@ -18,6 +18,7 @@ from pathlib import Path
 from jinja2 import Environment, PackageLoader, StrictUndefined
 from ulid import ULID
 
+from cairnlab.llm.client import LLMError
 from cairnlab.llm.figures import to_data_url
 from cairnlab.llm.schemas import ENTRY
 from cairnlab.provenance.objects import object_path
@@ -204,13 +205,31 @@ def write_entry(
         if ctx.empty and not dry_run:
             _store(conn, home, result)
         return result
-    raw = client.structured(
-        purpose="entry",
-        messages=build_messages(ctx, prompt, objects),
-        schema_name="Entry",
-        schema=ENTRY,
-        reasoning_effort="medium",
-    )
+    messages = build_messages(ctx, prompt, objects)
+    try:
+        raw = client.structured(
+            purpose="entry",
+            messages=messages,
+            schema_name="Entry",
+            schema=ENTRY,
+            reasoning_effort="medium",
+        )
+    except LLMError:
+        if backend != "glimmer" or not ctx.figures:
+            raise
+        # A self-hosted server built without vision rejects images: write from text.
+        log.warning("the Glimmer server rejected the figures; writing the entry from text")
+        text = prompt + (
+            "\n\n(The figures could not be shown to the model; describe them"
+            " only from their file names and the log.)"
+        )
+        raw = client.structured(
+            purpose="entry",
+            messages=[messages[0], {"role": "user", "content": text}],
+            schema_name="Entry",
+            schema=ENTRY,
+            reasoning_effort="medium",
+        )
     entry, dropped = validate_entry(raw, ctx.valid_ids)
     for d in dropped:
         log.info("dropped %s (%s): %s", d.where, d.reason, d.text[:120])

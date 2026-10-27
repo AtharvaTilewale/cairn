@@ -121,7 +121,7 @@ def test_glimmer_never_uses_temperature_zero(tmp_path):
     c.structured(purpose="t", messages=[], schema_name="T", schema=SCHEMA, temperature=0)
     call = comp.calls[0]
     assert call["model"] == "muse-glimmer" and call["temperature"] > 0
-    assert "reasoning_effort" not in call
+    assert "reasoning_effort" not in call  # mapped to the chat template instead
 
 
 def test_missing_key_is_a_clear_error(tmp_path, monkeypatch):
