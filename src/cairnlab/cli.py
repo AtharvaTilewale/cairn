@@ -117,6 +117,11 @@ def status() -> None:
     out.print(f"Store:    {home}")
     out.print(f"Database: {config.db_path(home)}")
     out.print(f"Events: {repo.count(conn, 'events')}   Runs: {repo.count(conn, 'runs')}")
+    out.print(
+        f"Files: {repo.count(conn, 'artifacts')} artefacts,"
+        f" {repo.count(conn, 'artifact_versions')} versions,"
+        f" {repo.count(conn, 'file_events')} changes"
+    )
 
     hosts = repo.hosts(conn)
     if hosts:

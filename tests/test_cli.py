@@ -65,6 +65,7 @@ def test_status_on_empty_store(project):
     assert result.exit_code == 0, result.output
     assert "cairn.db" in result.output
     assert "events: 0" in result.output.lower()
+    assert "0 artefacts, 0 versions, 0 changes" in result.output
     assert "runs: 0" in result.output.lower()
 
 
