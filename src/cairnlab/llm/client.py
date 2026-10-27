@@ -130,6 +130,17 @@ class Client:
             raise LLMError(f"{purpose}: model returned {type(out).__name__}, not an object")
         return out
 
+    def complete(
+        self,
+        *,
+        purpose: str,
+        messages: list[dict],
+        tools: list[dict],
+        reasoning_effort: str | None = None,
+    ) -> Any:
+        """One tool-calling turn; returns the assistant message (``content``, ``tool_calls``)."""
+        return self._call(purpose, messages, None, reasoning_effort=reasoning_effort, tools=tools)
+
     def _call(
         self,
         purpose: str,
@@ -137,10 +148,14 @@ class Client:
         response_format: dict | None,
         reasoning_effort: str | None = None,
         temperature: float | None = None,
-    ) -> str:
+        tools: list[dict] | None = None,
+    ) -> Any:
         kwargs: dict[str, Any] = {"model": self.model, "messages": messages}
         if response_format:
             kwargs["response_format"] = response_format
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
         if self.backend == "spark":
             if reasoning_effort:
                 kwargs["reasoning_effort"] = reasoning_effort
@@ -162,7 +177,8 @@ class Client:
                     continue
                 raise LLMError(f"{purpose}: {type(exc).__name__}: {exc}") from exc
             self._log_usage(purpose, resp, time.perf_counter() - t0)
-            return resp.choices[0].message.content
+            message = resp.choices[0].message
+            return message if tools else message.content
         raise LLMError(f"{purpose}: gave up after {self.max_retries} retries")  # pragma: no cover
 
     def _log_usage(self, purpose: str, resp: Any, latency: float) -> None:
