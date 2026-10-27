@@ -142,6 +142,7 @@ __cairn_debug() {
   __cairn_t0_sec=$__cairn_sec
   __cairn_t0_ms=$__cairn_ms
   __cairn_t0_cwd=$PWD
+  __cairn_t0_cmd=${BASH_COMMAND-}
   return 0
 }
 
@@ -150,7 +151,7 @@ __cairn_debug() {
 # its exact start. Lines that never fire the trap in this shell (a bare "( ... )",
 # coproc, a function definition) fall back to the prompt time, flagged ts_start_approx.
 __cairn_write() {
-  local rc=$1 hist num text start end dir file approx= cwd
+  local rc=$1 hist num text start end dir file approx= repeat= cwd
   [ -n "${CAIRN_HOME-}" ] || return 0
   hist=$(HISTTIMEFORMAT= builtin history 1)
   hist=${hist#"${hist%%[![:space:]]*}"}
@@ -158,9 +159,21 @@ __cairn_write() {
   [ -n "$num" ] || return 0
   text=${hist#"$num"}
   text=${text:2}
-  # History unchanged: empty line, HISTCONTROL ignorespace/ignoredups, or history off.
+  # History unchanged: an empty line, a line hidden by ignorespace, or an identical
+  # rerun swallowed by ignoredups. Only the rerun is recorded: the DEBUG trap fired,
+  # ignoredups is on, and the first simple command it saw starts the previous entry.
+  # (A hidden line whose first command happens to prefix the previous entry would be
+  # misread as a rerun; its own text is still never recorded.)
   if [ "$num" = "${__cairn_last_hist-}" ] && [ "$text" = "${__cairn_last_text-}" ]; then
-    return 0
+    [ -n "${__cairn_t0_sec-}" ] && [ -n "${__cairn_t0_cmd-}" ] || return 0
+    case ${HISTCONTROL-} in
+      *ignoredups* | *ignoreboth* | *erasedups*) ;;
+      *) return 0 ;;
+    esac
+    case $text in
+      "$__cairn_t0_cmd"*) repeat=',"hist_repeat":true' ;;
+      *) return 0 ;;
+    esac
   fi
   __cairn_last_hist=$num
   __cairn_last_text=$text
@@ -191,9 +204,9 @@ __cairn_write() {
   __cairn_json_escape "$cwd"; j_cwd=$__cairn_j
   __cairn_json_escape "$text"; j_cmd=$__cairn_j
   __cairn_json_escape "${CAIRN_SESSION-}"; j_sess=$__cairn_j
-  printf '{"v":1,"type":"cmd","id":"%s-%s","session":"%s","host":"%s","shell":"bash","user":"%s","cwd":"%s","cmd":"%s","ts_start":"%s","ts_end":"%s","exit":%d%s}\n' \
+  printf '{"v":1,"type":"cmd","id":"%s-%s","session":"%s","host":"%s","shell":"bash","user":"%s","cwd":"%s","cmd":"%s","ts_start":"%s","ts_end":"%s","exit":%d%s%s}\n' \
     "$j_sess" "$__cairn_seq" "$j_sess" "$j_host" "$j_user" "$j_cwd" "$j_cmd" \
-    "$start" "$end" "$rc" "$approx" >>"$file"
+    "$start" "$end" "$rc" "$approx" "$repeat" >>"$file"
 }
 
 # First entry of PROMPT_COMMAND.
@@ -203,6 +216,7 @@ __cairn_precmd() {
     __cairn_write "$__cairn_rc" 2>/dev/null || :
   fi
   __cairn_t0_sec=
+  __cairn_t0_cmd=
   return $__cairn_rc
 }
 
@@ -237,7 +251,7 @@ __cairn_unload() {
     __cairn_debug __cairn_write __cairn_precmd __cairn_arm __cairn_wrapper \
     __cairn_activate __cairn_deactivate __cairn_grab_trap __cairn_unload
   unset __cairn_marker __cairn_ignore __cairn_j __cairn_ts __cairn_sec __cairn_ms \
-    __cairn_armed __cairn_t0_sec __cairn_t0_ms __cairn_t0_cwd __cairn_last_hist \
+    __cairn_armed __cairn_t0_sec __cairn_t0_ms __cairn_t0_cwd __cairn_t0_cmd __cairn_last_hist \
     __cairn_last_text __cairn_seq __cairn_host __cairn_p_sec __cairn_p_cwd __cairn_session_id __cairn_default_home \
     __cairn_debug_probe
 }
@@ -253,6 +267,13 @@ __cairn_activate() {
     __cairn_unload
     return 1
   fi
+  case $CAIRN_USER in
+    *[!A-Za-z0-9._-]*)
+      echo "cairn: CAIRN_USER='$CAIRN_USER' may only use letters, digits, '.', '_' and '-'" >&2
+      __cairn_unload
+      return 1
+      ;;
+  esac
   if [ -n "${__cairn_active-}" ]; then
     echo "cairn: already active in this shell (session $CAIRN_SESSION)" >&2
     return 0

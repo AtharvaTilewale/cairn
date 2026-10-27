@@ -151,12 +151,61 @@ def test_redaction(tmp_path):
 def test_history_control(tmp_path):
     s = run_shell(
         tmp_path,
-        [ACTIVATE, "echo one", " echo hidden", "", "echo dup", "echo dup", "echo two"],
+        [
+            ACTIVATE,
+            "echo one",
+            " echo hidden",
+            "",
+            "python3 -c 'print(1)'",
+            "python3 -c 'print(1)'",
+            "false",
+            "false",
+            "echo two",
+        ],
         env={"HISTCONTROL": "ignoreboth"},
     )
-    # Leading space and empty Enter are skipped. A repeated identical command does not
-    # create a new history entry under ignoredups, so it is not recorded twice.
-    assert cmds(s) == ["echo one", "echo dup", "echo two"]
+    # Leading space and empty Enter are skipped. An identical rerun adds no history
+    # entry under ignoredups but is still a real run, so it is recorded and flagged.
+    assert cmds(s) == ["echo one", *["python3 -c 'print(1)'"] * 2, "false", "false", "echo two"]
+    assert [e.get("hist_repeat", False) for e in s.events] == [
+        False,
+        False,
+        True,
+        False,
+        True,
+        False,
+    ]
+    assert [e["exit"] for e in s.events] == [0, 0, 0, 1, 1, 0]
+
+
+def test_hidden_command_is_not_mistaken_for_a_repeat(tmp_path):
+    s = run_shell(
+        tmp_path,
+        [ACTIVATE, "echo visible", " echo secret-ish", " true", "echo after"],
+        env={"HISTCONTROL": "ignoreboth"},
+    )
+    assert cmds(s) == ["echo visible", "echo after"]
+
+
+def test_repeats_without_ignoredups_are_ordinary(tmp_path):
+    s = run_shell(tmp_path, [ACTIVATE, "echo dup", "echo dup"], env={"HISTCONTROL": ""})
+    assert cmds(s) == ["echo dup", "echo dup"]
+    assert not any(e.get("hist_repeat") for e in s.events)
+
+
+@pytest.mark.parametrize("user", ["alice,", "a b", "x;rm", ""])
+def test_refuses_malformed_cairn_user(tmp_path, user):
+    s = run_shell(
+        tmp_path,
+        [
+            f"export CAIRN_USER='{user}'",
+            'eval "$(cairn activate)"; echo "rc=$?" > rc.txt',
+            "echo not-recorded",
+        ],
+    )
+    assert (s.cwd / "rc.txt").read_text() == "rc=1\n"
+    assert "CAIRN_USER" in s.stderr
+    assert s.events == []
 
 
 def test_preserves_and_restores_prompt_command_trap_and_ps1(tmp_path):
