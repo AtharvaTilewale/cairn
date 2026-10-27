@@ -323,12 +323,21 @@ def build(project: Path) -> None:
     (project / "params.txt").write_text(PARAMS)
 
 
-def play(project: Path, home: Path, step_delay: float = 0.6, readset: bool = False) -> dict:
+def play(
+    project: Path,
+    home: Path,
+    step_delay: float = 0.6,
+    readset: bool = False,
+    entry: bool = False,
+) -> dict:
     """Run every step through the real hook with ``cairn watch`` running; then ingest.
 
     With ``readset``, ingest asks Muse Spark which files each script reads and writes.
+    With ``entry``, Muse Spark then writes and checks the day's notebook entry.
     """
-    env = _env(home, readset)
+    env = _env(home, readset or entry)
+    if entry and not readset:
+        env["CAIRN_READSET"] = "0"
     home.mkdir(parents=True, exist_ok=True)
     subprocess.run(["cairn", "init"], cwd=project, env=env, check=True, capture_output=True)
     watcher = subprocess.Popen(
@@ -367,7 +376,18 @@ def play(project: Path, home: Path, step_delay: float = 0.6, readset: bool = Fal
     )
     key = answer_key()
     (project / "answer_key.json").write_text(json.dumps(key, indent=1))
-    return {"shell_stderr": stderr, "ingest": ingest.stdout.strip()}
+    info = {"shell_stderr": stderr, "ingest": ingest.stdout.strip()}
+    if entry:
+        res = subprocess.run(
+            ["cairn", "entry", "today"],
+            cwd=project,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        info["entry"] = (res.stdout + res.stderr).strip()
+    return info
 
 
 def _cost(project: Path) -> float:
@@ -387,6 +407,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Let linking call Muse Spark on the synthetic scripts (a few cents).",
     )
+    ap.add_argument(
+        "--entry",
+        action="store_true",
+        help="Also write and check the day's entry with Muse Spark (a few cents).",
+    )
     args = ap.parse_args(argv)
     t0 = time.perf_counter()
     base = args.keep or Path(tempfile.mkdtemp(prefix="synthlab-"))
@@ -394,11 +419,13 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(base)
     project, home = base / "proj", base / "home"
     build(project)
-    info = play(project, home, readset=args.readset)
+    info = play(project, home, readset=args.readset, entry=args.entry)
     metrics = compute(project)
     metrics["readset"] = args.readset
-    if args.readset:
+    if args.readset or args.entry:
         metrics["model_cost_usd"] = _cost(project)
+    if args.entry:
+        print(info.get("entry", ""))
     metrics["seconds"] = round(time.perf_counter() - t0, 1)
     print(info["ingest"])
     print(render(metrics))

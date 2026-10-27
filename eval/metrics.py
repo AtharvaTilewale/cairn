@@ -72,6 +72,7 @@ def compute(project: Path) -> dict:
     ).fetchone()
 
     edge_m = _edge_metrics(conn, pairs, root)
+    entry_m = _entry_metrics(conn, key, pairs)
 
     m = {
         "runs_expected": len(expected),
@@ -89,6 +90,7 @@ def compute(project: Path) -> dict:
         "small_versions_stored": f"{stored[0] or 0}/{stored[1]}",
         "missing_runs": [s["cmd"] for s in expected if s not in [p for p, _ in pairs]],
         **edge_m,
+        **entry_m,
     }
     m["ok"] = (
         m["run_recall"] == 1.0
@@ -139,6 +141,42 @@ def _edge_metrics(conn: sqlite3.Connection, pairs: list, root: str) -> dict:
     out["edge_false_positives"] = sorted(pred - truth)[:10]
     out["edge_false_negatives"] = sorted(truth - pred)[:10]
     return out
+
+
+def _entry_metrics(conn: sqlite3.Connection, key: dict, pairs: list) -> dict:
+    """Entry quality, when an entry was written: citations, faithfulness, coverage."""
+    row = conn.execute("SELECT json, markdown FROM entries ORDER BY created DESC").fetchone()
+    if row is None or not row[1] or not json.loads(row[0]).get("entry"):
+        return {}
+    payload, markdown = json.loads(row[0]), row[1]
+    entry = payload["entry"]
+    blob = json.dumps(entry)
+    claims = sum(len(p["claims"]) for p in entry.get("phases", [])) + len(entry.get("drift", []))
+    run_of = {s["i"]: r["id"] for s, r in pairs}
+    failed = [s["i"] for s in key["steps"] if s["record"] and s["exit"] != 0 and s["i"] in run_of]
+    cited_failed = [i for i in failed if f"R:{run_of[i]}" in blob]
+    low = markdown.lower()
+    params = [c for c in key["param_changes"] if c["key"] in low and c["new"] in low]
+    figures = conn.execute(
+        "SELECT COUNT(DISTINCT a.id) FROM edges e JOIN artifact_versions v"
+        " ON v.id = e.version_id JOIN artifacts a ON a.id = v.artifact_id"
+        " WHERE e.role = 'generated' AND a.kind = 'figure'"
+    ).fetchone()[0]
+    faith = payload.get("faithfulness") or {}
+    return {
+        "entry_claims": claims,
+        "entry_dropped": len(payload.get("dropped", [])),
+        "entry_faithfulness": faith.get("faithfulness"),
+        "entry_claim_verdicts": {
+            k: faith.get(k) for k in ("supported", "unsupported", "unverifiable")
+        },
+        "entry_param_changes_mentioned": f"{len(params)}/{len(key['param_changes'])}",
+        "entry_failed_runs_cited": f"{len(cited_failed)}/{len(failed)}",
+        "entry_figures_described": f"{len(entry.get('results', []))} items / {figures} figures",
+        "entry_unsupported": [
+            c["text"] for c in payload.get("claims", []) if c.get("verdict") == "unsupported"
+        ][:5],
+    }
 
 
 def render(m: dict) -> str:
