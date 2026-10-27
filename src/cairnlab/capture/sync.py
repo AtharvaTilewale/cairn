@@ -3,7 +3,7 @@
 Hosts are defined in ``~/.config/cairn/hosts.toml`` (or ``$CAIRN_HOSTS_FILE``)::
 
     [workstation]
-    ssh = "labuser"              # an SSH target; ~/.ssh/config does the rest
+    ssh = "workstation"         # an SSH target or ~/.ssh/config Host alias
     home = "~/.cairn-alice"   # CAIRN_HOME on that machine
 
 ``ssh = ""`` means ``home`` is a local directory (another store on this machine, and

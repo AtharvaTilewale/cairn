@@ -47,14 +47,14 @@ def stores(tmp_path):
 
 
 def test_commands_for_ssh_and_local():
-    remote = Host("workstation", ssh="labuser", home="~/.cairn-alice")
+    remote = Host("workstation", ssh="lab-ws", home="~/.cairn-alice")
     cmds = sync_commands(remote, hub_home=__import__("pathlib").Path("/hub/.cairn"))
     flat = [" ".join(c) for c in cmds]
     assert any(
-        "labuser:~/.cairn-alice/events/" in c and "/hub/.cairn/events/remote/workstation/" in c
+        "lab-ws:~/.cairn-alice/events/" in c and "/hub/.cairn/events/remote/workstation/" in c
         for c in flat
     )
-    assert any("labuser:~/.cairn-alice/objects/" in c and "--ignore-existing" in c for c in flat)
+    assert any("lab-ws:~/.cairn-alice/objects/" in c and "--ignore-existing" in c for c in flat)
     assert all("--delete" not in c for c in flat)  # pull only, never delete
 
 
@@ -92,11 +92,11 @@ def test_failed_transfer_raises(tmp_path):
 def test_hosts_file(tmp_path, monkeypatch):
     f = tmp_path / "hosts.toml"
     f.write_text(
-        '[workstation]\nssh = "labuser"\nhome = "~/.cairn-alice"\n[laptop]\nhome = "/srv/cairn"\n'
+        '[workstation]\nssh = "lab-ws"\nhome = "~/.cairn-alice"\n[laptop]\nhome = "/srv/cairn"\n'
     )
     monkeypatch.setenv("CAIRN_HOSTS_FILE", str(f))
     hosts = load_hosts()
-    assert hosts["workstation"] == Host("workstation", "labuser", "~/.cairn-alice")
+    assert hosts["workstation"] == Host("workstation", "lab-ws", "~/.cairn-alice")
     assert hosts["laptop"].ssh == ""
 
 

@@ -398,7 +398,7 @@ def sync(
         out.print(f"Hosts file: {hosts_file()}")
         if not hosts:
             out.print(
-                '  none yet; add e.g.\n  [workstation]\n  ssh = "labuser"\n'
+                '  none yet; add e.g.\n  [workstation]\n  ssh = "workstation"\n'
                 '  home = "~/.cairn-alice"',
                 markup=False,
             )

@@ -105,7 +105,7 @@ pulled over SSH. Define them in `~/.config/cairn/hosts.toml`:
 
 ```toml
 [workstation]
-ssh = "labuser"              # any SSH target; ~/.ssh/config does the rest
+ssh = "workstation"         # an SSH target or ~/.ssh/config Host alias
 home = "~/.cairn-alice"   # CAIRN_HOME on that machine
 ```
 
@@ -207,7 +207,7 @@ llama-server splits `-c` across slots, and a starved slot returns nothing. From 
 hub, reach it through SSH and point Cairn at it:
 
 ```bash
-ssh -N -L 8080:127.0.0.1:8080 labuser &
+ssh -N -L 8080:127.0.0.1:8080 workstation &
 export CAIRN_GLIMMER_BASE_URL=http://127.0.0.1:8080/v1
 cairn entry yesterday --backend glimmer --no-check
 cairn status                 # "Model usage" shows Glimmer's measured tokens/s
