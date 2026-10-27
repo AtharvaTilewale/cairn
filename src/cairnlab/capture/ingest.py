@@ -389,9 +389,9 @@ def _attach_notes(conn: sqlite3.Connection) -> None:
     """Pin each unattached note to the run it explains.
 
     Notes and runs live in different files and arrive in any order, so this runs after
-    every ingest. The explicit ``run`` wins; else the latest run of the same terminal
-    session that started before the note (within 6 h); else the latest run on the
-    same host by the same user (within 1 h).
+    every ingest. The explicit ``run`` wins; else the last run of the same terminal
+    session that finished before the note (within 6 h); else the same for the user on
+    the host (within 1 h). A run still going at the note's time is a last resort.
     """
     rows = conn.execute(
         "SELECT n.id, n.ts, e.payload FROM notes n JOIN events e ON e.id = n.id"
@@ -414,13 +414,25 @@ def _attach_notes(conn: sqlite3.Connection) -> None:
 
 
 def _latest_run(conn, where: str, args, ts: str, window: timedelta) -> str | None:
+    """The run a note typed at ``ts`` explains: the last one that finished before it.
+
+    A background job still running when the note is typed is not "the last command",
+    even if its monitor recorded a later start; it is only chosen when nothing
+    finished before the note.
+    """
     args = args if isinstance(args, tuple) else (args,)
     earliest = format_ts(datetime.fromisoformat(ts) - window)
     row = conn.execute(
-        f"SELECT id FROM runs WHERE {where} AND ts_start <= ? AND ts_start >= ?"
-        " ORDER BY ts_start DESC LIMIT 1",
+        f"SELECT id FROM runs WHERE {where} AND ts_end IS NOT NULL AND ts_end <= ?"
+        " AND ts_start >= ? ORDER BY ts_end DESC LIMIT 1",
         (*args, ts, earliest),
     ).fetchone()
+    if row is None:
+        row = conn.execute(
+            f"SELECT id FROM runs WHERE {where} AND ts_start <= ? AND ts_start >= ?"
+            " ORDER BY ts_start DESC LIMIT 1",
+            (*args, ts, earliest),
+        ).fetchone()
     return row[0] if row else None
 
 

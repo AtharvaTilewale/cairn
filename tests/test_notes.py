@@ -199,3 +199,64 @@ def test_note_in_an_activated_shell_explains_the_previous_command(tmp_path):
     )
     conn = db.connect(proj / ".cairn" / "cairn.db")
     assert attached(conn) == {"tau looks too long; try a larger cutoff": "python3 -c 'print(1)'"}
+
+
+def test_note_skips_a_background_job_that_is_still_running(tmp_path):
+    """Held-out run 1: the --bg monitor recorded its start 19 ms after the next command."""
+    from ulid import ULID
+
+    rid = str(ULID())
+    report = cmd(1, "2026-10-28T15:14:44.327Z")
+    report["ts_end"] = "2026-10-28T15:14:44.338Z"
+    start = {
+        "v": 1,
+        "type": "run_start",
+        "id": f"{rid}-start",
+        "run_id": rid,
+        "pid": 1,
+        "monitor_pid": 1,
+        "session": "S",
+        "host": "hp",
+        "user": "t",
+        "cwd": "/p",
+        "cmd": "python align_sim.py",
+        "ts_start": "2026-10-28T15:14:44.346Z",
+    }
+    end = {
+        "v": 1,
+        "type": "run_end",
+        "id": f"{rid}-end",
+        "run_id": rid,
+        "host": "hp",
+        "user": "t",
+        "exit": 0,
+        "ts_end": "2026-10-28T15:14:46.167Z",
+        "wrapper": {},
+    }
+    conn = load(
+        tmp_path,
+        {"e.jsonl": [report, start, end, note(1, "2026-10-28T15:14:44.759Z", "keeping k=7")]},
+    )
+    assert attached(conn)["keeping k=7"] == "python step1.py"
+
+
+def test_note_falls_back_to_a_running_job_when_nothing_finished(tmp_path):
+    from ulid import ULID
+
+    rid = str(ULID())
+    start = {
+        "v": 1,
+        "type": "run_start",
+        "id": f"{rid}-start",
+        "run_id": rid,
+        "pid": 1,
+        "monitor_pid": 1,
+        "session": "S",
+        "host": "hp",
+        "user": "t",
+        "cwd": "/p",
+        "cmd": "gmx mdrun",
+        "ts_start": "2026-10-28T10:00:00.000Z",
+    }
+    conn = load(tmp_path, {"e.jsonl": [start, note(1, "2026-10-28T10:05:00.000Z", "md running")]})
+    assert attached(conn)["md running"] == "gmx mdrun"
