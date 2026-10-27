@@ -117,3 +117,27 @@ def test_deactivate_prints_restore_code(project):
     result = runner.invoke(app, ["deactivate"])
     assert result.exit_code == 0
     assert "__cairn_deactivate" in result.stdout
+
+
+def test_ingest_then_status(project):
+    runner.invoke(app, ["init"])
+    events = project / ".cairn" / "events"
+    line = (
+        '{"v":1,"type":"cmd","id":"S-1","session":"S","host":"synth","shell":"bash",'
+        '"user":"tester","cwd":"/p","cmd":"echo hi","ts_start":"2026-10-28T09:00:00.000Z",'
+        '"ts_end":"2026-10-28T09:00:01.000Z","exit":0}\n'
+    )
+    (events / "synth-2026-10-28.jsonl").write_text(line)
+    assert "Not yet ingested" in runner.invoke(app, ["status"]).output
+    result = runner.invoke(app, ["ingest"])
+    assert result.exit_code == 0, result.output
+    assert "1 new runs" in result.output
+    status = runner.invoke(app, ["status"]).output
+    assert "Runs: 1" in status
+    assert "synth" in status and "2026-10-28T09:00:00.000Z" in status
+    assert "Not yet ingested" not in status
+    assert "0 new runs" in runner.invoke(app, ["ingest"]).output
+
+
+def test_ingest_without_store(project):
+    assert runner.invoke(app, ["ingest"]).exit_code == 1

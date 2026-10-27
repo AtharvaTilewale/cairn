@@ -13,6 +13,7 @@ from ulid import ULID
 
 from cairnlab import config
 from cairnlab.capture.hooks import activation_script, deactivation_script
+from cairnlab.capture.ingest import ingest as ingest_events
 from cairnlab.store import db, repo
 from cairnlab.store.models import utc_now
 
@@ -151,7 +152,21 @@ def deactivate() -> None:
 @app.command()
 def ingest() -> None:
     """Load new JSONL events into the database (idempotent)."""
-    _todo("ingest")
+    home = config.find_home()
+    if home is None:
+        err.print("[red]No Cairn store here.[/red] Run [bold]cairn init[/bold] in your project.")
+        raise typer.Exit(1)
+    conn = db.connect(config.db_path(home))
+    db.migrate(conn)
+    stats = ingest_events(conn, config.events_dir(home))
+    conn.close()
+    out.print(
+        f"Ingested {stats.runs} new runs from {stats.lines} lines in {stats.files} files"
+        f" ({stats.duplicates} duplicates, {stats.malformed} malformed,"
+        f" {stats.unsupported} unsupported)."
+    )
+    if stats.malformed:
+        err.print("Malformed lines were skipped; run with --verbose for details.")
 
 
 # --- not implemented yet -----------------------------------------------------------------
