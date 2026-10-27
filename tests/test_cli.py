@@ -90,3 +90,30 @@ def test_stubs_exit_zero(args, project):
     result = runner.invoke(app, args)
     assert result.exit_code == 0, result.output
     assert "not implemented yet" in result.output
+
+
+def test_activate_prints_hook_for_this_store(project):
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["activate"])
+    assert result.exit_code == 0
+    assert f"__cairn_default_home={project / '.cairn'}" in result.stdout
+    assert result.stdout.rstrip().endswith("__cairn_activate")
+
+
+def test_activate_outside_a_store_leaves_home_to_the_hook(project):
+    result = runner.invoke(app, ["activate"])
+    assert result.exit_code == 0
+    assert "__cairn_default_home=" not in result.stdout
+
+
+def test_activate_uses_a_fresh_ulid_session(project):
+    first = runner.invoke(app, ["activate"]).stdout.splitlines()[0]
+    second = runner.invoke(app, ["activate"]).stdout.splitlines()[0]
+    assert first.startswith("__cairn_session_id=") and len(first) == len("__cairn_session_id=") + 26
+    assert first != second
+
+
+def test_deactivate_prints_restore_code(project):
+    result = runner.invoke(app, ["deactivate"])
+    assert result.exit_code == 0
+    assert "__cairn_deactivate" in result.stdout

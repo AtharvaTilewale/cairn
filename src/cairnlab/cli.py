@@ -1,6 +1,7 @@
 """Cairn command-line interface: one sub-command per feature."""
 
 import logging
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -8,8 +9,10 @@ import typer
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
+from ulid import ULID
 
 from cairnlab import config
+from cairnlab.capture.hooks import activation_script, deactivation_script
 from cairnlab.store import db, repo
 from cairnlab.store.models import utc_now
 
@@ -121,14 +124,28 @@ def status() -> None:
 
 @app.command()
 def activate() -> None:
-    """Print the bash capture hook; use as: eval "$(cairn activate)"."""
-    _todo("activate")
+    """Print the bash capture hook; use as: eval "$(cairn activate)".
+
+    Needs CAIRN_USER set in the shell. Events go to $CAIRN_HOME, else the nearest
+    .cairn/ above the current directory, else ~/.cairn-$CAIRN_USER.
+    """
+    if sys.stdout.isatty():
+        err.print('Use this as: [bold]eval "$(cairn activate)"[/bold]')
+        raise typer.Exit(1)
+    sys.stdout.write(activation_script(home=config.find_home(), session=str(ULID())))
 
 
 @app.command()
 def deactivate() -> None:
-    """Remove the capture hook from this shell."""
-    _todo("deactivate")
+    """Remove the capture hook from this shell (restores PROMPT_COMMAND, DEBUG trap, PS1)."""
+    if sys.stdout.isatty():
+        err.print(
+            "Capture is not active in this shell, or was started elsewhere. "
+            "In an activated shell run [bold]cairn deactivate[/bold] or "
+            '[bold]eval "$(cairn deactivate)"[/bold].'
+        )
+        return
+    sys.stdout.write(deactivation_script())
 
 
 @app.command()
