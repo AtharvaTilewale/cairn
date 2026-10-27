@@ -73,7 +73,6 @@ def test_status_on_empty_store(project):
     "args",
     [
         ["sync", "cluster"],
-        ["trace", "fig.png"],
         ["reproduce", "fig.png", "--yes"],
         ["ask", "what changed?"],
         ["report", "week"],

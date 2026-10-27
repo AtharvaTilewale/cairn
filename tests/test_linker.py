@@ -382,3 +382,13 @@ def test_background_unseen_change_outside_cwd_is_not_claimed(store):
     assert ("generated", "runs/out.csv", "a", "wrapper") in got
     assert not any(p == "notes/todo.md" for _, p, _, _ in got)
     assert conf(conn, "python job.py", "runs/out.csv", "generated") == 0.6
+
+
+def test_back_to_back_runs_are_not_ambiguous(store):
+    conn, load = store
+    load(
+        cmd("sed -i s/a/b/ p.txt", 10, 10.1),
+        fev("p.txt", 10.05, "a"),
+        cmd("python next.py", 10.6, 11),
+    )
+    assert conf(conn, "sed -i s/a/b/ p.txt", "p.txt", "generated") == 0.7

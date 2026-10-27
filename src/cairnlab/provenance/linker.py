@@ -354,7 +354,8 @@ def _link_run(conn, run, reader: Reader | None, stats: LinkStats) -> None:
     if end is not None and wrapper is None:
         overlap = conn.execute(
             "SELECT 1 FROM runs r JOIN events e ON e.id = r.id WHERE r.host = ? AND r.id != ?"
-            " AND r.ts_start <= ? AND COALESCE(r.ts_end, ?) >= ?"
+            # Strict: the grace is clipped exactly at the next run's start, which is not overlap.
+            " AND r.ts_start < ? AND COALESCE(r.ts_end, ?) > ?"
             " AND json_extract(e.payload, '$.wrapper') IS NULL LIMIT 1",
             (host, run_id, end, end, start),
         ).fetchone()

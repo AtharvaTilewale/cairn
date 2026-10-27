@@ -28,6 +28,9 @@ from cairnlab.capture.runwrap import WrapContext, run_wrapped
 from cairnlab.capture.watcher import EventWriter, FileTracker, rules_for
 from cairnlab.capture.watcher import watch as watch_files
 from cairnlab.llm.client import Client, LLMError
+from cairnlab.provenance.graph import input_status, resolve_version
+from cairnlab.provenance.graph import node as graph_node
+from cairnlab.provenance.graph import trace as trace_graph
 from cairnlab.provenance.linker import GRACE
 from cairnlab.provenance.linker import link as link_runs
 from cairnlab.provenance.readset import ReadsetReader
@@ -524,9 +527,102 @@ def entry(
 
 
 @app.command()
-def trace(path: Annotated[str, typer.Argument(help="Artefact path.")]) -> None:
-    """Show the provenance chain and regenerate command for a file."""
-    _todo("trace")
+def trace(
+    path: Annotated[str, typer.Argument(help="File (or A:<version>) to explain.")],
+    at: Annotated[str | None, typer.Option(help="The version current at this time.")] = None,
+    sha: Annotated[str | None, typer.Option(help="The version with this hash prefix.")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Machine-readable output.")] = False,
+) -> None:
+    """Show the chain of runs and inputs that produced a file, and how to regenerate it."""
+    home = _require_home()
+    conn = db.connect(config.db_path(home))
+    db.migrate(conn)
+    tz = config.timezone(home)
+    host = config.local_host()
+    if path.startswith("A:"):
+        vid = path[2:]
+    else:
+        at_ts = normalize_ts(at) if at else None
+        vid = None
+        for candidate in dict.fromkeys([os.path.abspath(path), str(Path(path).resolve())]):
+            vid = resolve_version(conn, host, candidate, at=at_ts, sha=sha)
+            if vid:
+                break
+    if not vid or graph_node(conn, vid) is None:
+        err.print(f"[red]No recorded version of {path!r}[/red] on {host}.")
+        raise typer.Exit(1)
+    t = trace_graph(conn, vid)
+    if as_json:
+        sys.stdout.write(json.dumps(t.to_dict(), indent=1) + "\n")
+        return
+    out.print(_trace_tree(t, tz, config.project_root(home)))
+    final = t.producer_of(vid)
+    if final is None:
+        out.print("\nThis version was not produced by any recorded run (a raw input).")
+        return
+    r = final.run
+    out.print("\n[bold]Regenerate the final step:[/bold]")
+    out.print(f"  cd {r['cwd']}", markup=False)
+    out.print(f"  {r['cmd']}", markup=False, soft_wrap=True)
+    context = []
+    if r.get("git_commit"):
+        dirty = " with uncommitted changes" if r.get("git_dirty") else ""
+        context.append(f"recorded at git {r.get('git_branch')}@{r['git_commit'][:7]}{dirty}")
+    if r.get("env_name"):
+        context.append(f"env {r['env_name']}")
+    if context:
+        out.print(f"  ({'; '.join(context)})")
+    if r.get("host") == host:
+        for p, status in input_status(conn, final):
+            colour = {"unchanged": "green", "changed since": "yellow"}.get(status, "red")
+            out.print(
+                f"  input {_rel(p, config.project_root(home))}: [{colour}]{status}[/{colour}]"
+            )
+
+
+def _rel(path: str, root: Path | None) -> str:
+    if root and path.startswith(str(root).rstrip("/") + "/"):
+        return path[len(str(root).rstrip("/")) + 1 :]
+    return path
+
+
+def _trace_tree(t, tz, root: Path | None):
+    from rich.markup import escape
+    from rich.tree import Tree
+
+    def label(vid: str) -> str:
+        n = t.nodes[vid]
+        return (
+            f"[bold]{escape(_rel(n.path, root))}[/bold] [dim]A:{vid} sha {n.sha[:8]}"
+            f" {_local(n.ts, tz)}[/dim]"
+        )
+
+    shown: set[str] = set()
+
+    def add(tree, vid: str) -> None:
+        branch = tree.add(label(vid))
+        step = t.producer_of(vid)
+        if step is None:
+            branch.add("[dim]raw input (not produced by a recorded run)[/dim]")
+            return
+        r = step.run
+        status = f"exit {r['exit']}" if r["exit"] is not None else r["status"]
+        run_branch = branch.add(
+            f"[cyan]{escape(r['cmd'] or '')}[/cyan] [dim]R:{r['id']} {_local(r['ts_start'], tz)}"
+            f" {status} · {step.method} {step.confidence:.1f}[/dim]"
+        )
+        for text in step.notes:
+            run_branch.add(f"[magenta]note:[/magenta] {escape(text)}")
+        if r["id"] in shown:
+            run_branch.add("[dim](inputs shown above)[/dim]")
+            return
+        shown.add(r["id"])
+        for inp in step.inputs:
+            add(run_branch, inp)
+
+    tree = Tree(f"[bold]Provenance of {escape(_rel(t.nodes[t.target].path, root))}[/bold]")
+    add(tree, t.target)
+    return tree
 
 
 @app.command()
