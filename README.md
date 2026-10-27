@@ -6,8 +6,8 @@ turn a day of raw events into a dated, provenance-linked notebook entry.
 
 Built for the Meta Global AI Developer Hackathon (Indie track, "Build for Your World").
 
-> Status: early. Shell and file capture, git/env snapshots and ingest work; provenance
-> linking, notebook entries and the reproduce agent are in progress.
+> Status: capture, snapshots, provenance linking and `cairn run` work; notebook
+> entries, trace and the reproduce agent are in progress.
 
 ## Install
 
@@ -39,12 +39,34 @@ What gets recorded:
 - Identical reruns are recorded even with `HISTCONTROL=ignoredups`.
 
 `cairn scan [--since TIME]` is the one-shot version of `watch` for machines where no
-background process may run (it is what sync uses on an HPC login node).
+background process may run.
+
+For exact provenance, wrap a command:
+
+```bash
+cairn run -- python fit.py data/obs.csv --out results/fit.json
+cairn run --bg -- gmx mdrun -deffnm md      # detached; survives closing the terminal
+```
+
+`cairn run` snapshots the project before and after, so the files it wrote are known
+exactly. `--bg` also tracks which files the job holds open, so a long simulation's
+outputs are never confused with what you do in the same directory meanwhile.
+
+## Provenance
+
+`cairn ingest` links every run to the artefact versions it used and generated:
+paths named on the command line, files changed while the run was active, the exact
+outputs of `cairn run`, and (**readset**) the files a script names in its own code,
+which Muse Spark reads once per script version. Readset sends the script's source to
+the Meta Model API; set `readset = false` under `[link]` in `.cairn/config.toml` (or
+`CAIRN_READSET=0`) to keep scripts local. Model calls and their cost are logged to
+`.cairn/usage.jsonl`.
 
 ## Evaluation
 
 ```bash
-python -m eval.synthlab         # scripted fake project + answer key; prints capture metrics
+python -m eval.synthlab              # scripted fake project + answer key; prints metrics
+python -m eval.synthlab --readset    # also lets linking call Muse Spark (about $0.01)
 ```
 
 Commands starting with a space are not recorded when `HISTCONTROL` includes
