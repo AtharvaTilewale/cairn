@@ -42,6 +42,7 @@ from cairnlab.provenance.linker import link as link_runs
 from cairnlab.provenance.readset import ReadsetReader
 from cairnlab.store import db, repo
 from cairnlab.store.models import format_ts, normalize_ts, utc_now
+from cairnlab.synth.ask import Asker
 from cairnlab.synth.claims import check_faithfulness
 from cairnlab.synth.claims import summarize as summarize_claims
 from cairnlab.synth.entry import save_faithfulness, write_entry
@@ -822,9 +823,39 @@ def reproduce(
 
 
 @app.command()
-def ask(question: Annotated[str, typer.Argument(help="Question about the log.")]) -> None:
-    """Answer a question over the log, with citations."""
-    _todo("ask")
+def ask(question: Annotated[list[str], typer.Argument(help="Question about your work.")]):
+    """Answer a question from the record (runs, files, notes, entries), with citations."""
+    home = _require_home()
+    conn = db.connect(config.db_path(home))
+    db.migrate(conn)
+    try:
+        client = Client(home=home)
+    except LLMError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    usage = home / "usage.jsonl"
+    before = usage.stat().st_size if usage.is_file() else 0
+    asker = Asker(
+        client,
+        conn,
+        config.timezone(home),
+        config.local_host(),
+        config.project_root(home),
+        config.objects_dir(home),
+    )
+    try:
+        ans = asker.ask(" ".join(question))
+    except LLMError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    finally:
+        conn.close()
+    out.print(ans.markdown, markup=False, highlight=False, soft_wrap=True)
+    if ans.removed:
+        err.print(f"[yellow]Removed {len(ans.removed)} cited IDs not in the store.[/yellow]")
+    err.print(
+        f"[dim]{ans.tool_calls} tool calls, model cost ${_usage_cost(home, before):.4f}[/dim]"
+    )
 
 
 @app.command()

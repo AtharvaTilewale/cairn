@@ -72,7 +72,6 @@ def test_status_on_empty_store(project):
 @pytest.mark.parametrize(
     "args",
     [
-        ["ask", "what changed?"],
         ["serve"],
     ],
 )
