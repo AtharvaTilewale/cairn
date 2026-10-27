@@ -5,6 +5,6 @@ this line is not json
 {"v":1,"type":"cmd","id":"01JSYNTHSESSION00000000000-3","session":"01JSYNTHSESSION00000000000","host":"synth","shell":"bash","user":"tester","cwd":"/data/proj","cmd":"python fit.py","ts_start":"not a time","ts_end":"2026-10-28T09:16:01.000Z","exit":1}
 
 {"v":1,"type":"cmd","id":"01JSYNTHSESSION00000000000-4","session":"01JSYNTHSESSION00000000000","host":"synth","shell":"bash","user":"tester","cwd":"/data/proj","cmd":"python fit.py --cutoff 1.2","ts_start":"2026-10-28T09:20:00.500Z","ts_end":"2026-10-28T09:20:09.250Z","exit":1}
-{"v":1,"type":"note","id":"n-1","ts":"2026-10-28T09:21:00.000Z","text":"unsupported type for now"}
+{"v":1,"type":"heartbeat","id":"h-1","ts":"2026-10-28T09:21:00.000Z","text":"unsupported type"}
 {"v":1,"type":"cmd","id":"01JSYNTHSESSION00000000000-5","session":"01JSYNTHSESSION00000000000","host":"synth","shell":"bash","user":"tester","cwd":"/data/proj","cmd":"echo \"héllo\tdone\" 🎉","ts_start":"2026-10-28T09:22:00.000Z","ts_end":"2026-10-28T09:22:00.010Z","exit":0}
 {"v":1,"type":"cmd","id":"01JSYNTHSESSION00000000000-1","session":"01JSYNTHSESSION00000000000","host":"synth","shell":"bash","user":"tester","cwd":"/data/proj","cmd":"python gen.py --n 100","ts_start":"2026-10-28T09:14:03.120Z","ts_end":"2026-10-28T09:14:05.871Z","exit":0}

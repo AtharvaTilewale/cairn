@@ -60,7 +60,7 @@ def test_fixture_ingest_skips_malformed(store, caplog):
     stats = ingest(conn, events)
     assert stats.runs == 3
     assert stats.malformed == 4  # not json, missing user, array, bad timestamp
-    assert stats.unsupported == 1  # the note event
+    assert stats.unsupported == 1  # the heartbeat event (unknown type)
     assert stats.duplicates == 1  # the repeated -1 line
     assert [r["cmd"] for r in runs(conn)] == [
         "python gen.py --n 100",
