@@ -396,3 +396,22 @@ def test_cairn_watch_process(tmp_path):
     by_name = {Path(e["path"]).name: e["op"] for e in events}
     assert by_name["before.txt"] == "scanned"
     assert by_name["fig.png"] == "created"
+
+
+def test_records_environment(tmp_path):
+    s = run_shell(
+        tmp_path,
+        [
+            ACTIVATE,
+            "echo none",
+            'export CONDA_DEFAULT_ENV=md CONDA_PREFIX="/opt/conda/envs/md"',
+            "echo conda",
+            'export VIRTUAL_ENV="/home/x/my \\"venv\\""',
+            "echo venv",
+        ],
+    )
+    by_cmd = {e["cmd"]: e for e in s.events}
+    assert "conda_env" not in by_cmd["echo none"] and "env_prefix" not in by_cmd["echo none"]
+    assert by_cmd["echo conda"]["conda_env"] == "md"
+    assert by_cmd["echo conda"]["env_prefix"] == "/opt/conda/envs/md"
+    assert by_cmd["echo venv"]["env_prefix"] == '/home/x/my "venv"'

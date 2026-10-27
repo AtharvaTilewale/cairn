@@ -198,15 +198,27 @@ __cairn_write() {
   file=$dir/$__cairn_host-${end:0:10}.jsonl
   __cairn_seq=$((${__cairn_seq-0} + 1))
 
+  # The environment the command ran in (cheap: two variables).
+  local envj= j_env
+  if [ -n "${CONDA_DEFAULT_ENV-}" ]; then
+    __cairn_json_escape "$CONDA_DEFAULT_ENV"
+    envj=",\"conda_env\":\"$__cairn_j\""
+  fi
+  j_env=${VIRTUAL_ENV:-${CONDA_PREFIX-}}
+  if [ -n "$j_env" ]; then
+    __cairn_json_escape "$j_env"
+    envj="$envj,\"env_prefix\":\"$__cairn_j\""
+  fi
+
   local j_host j_user j_cwd j_cmd j_sess
   __cairn_json_escape "$__cairn_host"; j_host=$__cairn_j
   __cairn_json_escape "${CAIRN_USER-}"; j_user=$__cairn_j
   __cairn_json_escape "$cwd"; j_cwd=$__cairn_j
   __cairn_json_escape "$text"; j_cmd=$__cairn_j
   __cairn_json_escape "${CAIRN_SESSION-}"; j_sess=$__cairn_j
-  printf '{"v":1,"type":"cmd","id":"%s-%s","session":"%s","host":"%s","shell":"bash","user":"%s","cwd":"%s","cmd":"%s","ts_start":"%s","ts_end":"%s","exit":%d%s%s}\n' \
+  printf '{"v":1,"type":"cmd","id":"%s-%s","session":"%s","host":"%s","shell":"bash","user":"%s","cwd":"%s","cmd":"%s","ts_start":"%s","ts_end":"%s","exit":%d%s%s%s}\n' \
     "$j_sess" "$__cairn_seq" "$j_sess" "$j_host" "$j_user" "$j_cwd" "$j_cmd" \
-    "$start" "$end" "$rc" "$approx" "$repeat" >>"$file"
+    "$start" "$end" "$rc" "$approx" "$repeat" "$envj" >>"$file"
 }
 
 # First entry of PROMPT_COMMAND.

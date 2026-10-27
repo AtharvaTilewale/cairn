@@ -17,6 +17,8 @@ from pathlib import Path
 from pydantic import ValidationError
 from ulid import ULID
 
+from cairnlab.capture.envsnap import EnvSnapshotter
+from cairnlab.capture.gitsnap import GitSnapshotter
 from cairnlab.provenance.objects import has_object
 from cairnlab.store import db, repo
 from cairnlab.store.models import CmdEvent, FileEvent, utc_now
@@ -86,6 +88,38 @@ def artifact_kind(path: str) -> str:
 
 
 @dataclass
+class Snapshots:
+    """Git/env snapshotters for runs recorded on ``host`` (this machine).
+
+    Runs from other hosts are never snapshotted here: their paths are not ours.
+    """
+
+    host: str
+    git: GitSnapshotter
+    env: EnvSnapshotter
+
+    def apply(self, conn: sqlite3.Connection, run_id: str, event: CmdEvent) -> None:
+        if event.host != self.host:
+            return
+        git = self.git.snapshot(event.cwd, event.ts_start, event.ts_end)
+        env_hash = self.env.env_hash(event.env_prefix, event.ts_end) if event.env_prefix else None
+        if git is None and env_hash is None:
+            return
+        conn.execute(
+            "UPDATE runs SET git_commit = ?, git_branch = ?, git_dirty = ?, git_diffstat = ?,"
+            " env_hash = ? WHERE id = ?",
+            (
+                git.commit if git else None,
+                git.branch if git else None,
+                None if git is None or git.dirty is None else int(git.dirty),
+                git.diffstat if git else None,
+                env_hash,
+                run_id,
+            ),
+        )
+
+
+@dataclass
 class IngestStats:
     """What one ingest pass did."""
 
@@ -99,11 +133,15 @@ class IngestStats:
 
 
 def ingest(
-    conn: sqlite3.Connection, events_dir: Path, objects_dir: Path | None = None
+    conn: sqlite3.Connection,
+    events_dir: Path,
+    objects_dir: Path | None = None,
+    snapshots: Snapshots | None = None,
 ) -> IngestStats:
     """Ingest every new complete line of every ``*.jsonl`` file in ``events_dir``.
 
     ``objects_dir`` is this store's object store; versions found there are marked stored.
+    ``snapshots`` adds git and environment state to runs recorded on this machine.
     """
     stats = IngestStats()
     if not events_dir.is_dir():
@@ -130,7 +168,7 @@ def ingest(
             pos = offset
             for n, raw in enumerate(data[: end + 1].splitlines(keepends=True), start=1):
                 where = f"{path.name} line {n} of new data (byte {pos})"
-                _ingest_line(conn, raw, where, stats, objects_dir)
+                _ingest_line(conn, raw, where, stats, objects_dir, snapshots)
                 pos += len(raw)
             repo.set_ingest_offset(conn, path.name, offset + end + 1, utc_now())
     return stats
@@ -142,6 +180,7 @@ def _ingest_line(
     where: str,
     stats: IngestStats,
     objects_dir: Path | None,
+    snapshots: Snapshots | None,
 ) -> None:
     text = raw.decode("utf-8", errors="replace").strip()
     if not text:
@@ -176,8 +215,11 @@ def _ingest_line(
     if isinstance(event, CmdEvent):
         if looks_secret(event.cmd):
             event.cmd = REDACTED
-        if _store_cmd(conn, event):
+        run_id = _store_cmd(conn, event)
+        if run_id:
             stats.runs += 1
+            if snapshots:
+                snapshots.apply(conn, run_id, event)
         else:
             stats.duplicates += 1
     elif _store_file(conn, event, objects_dir):
@@ -241,11 +283,11 @@ def _store_file(conn: sqlite3.Connection, event: FileEvent, objects_dir: Path | 
     return True
 
 
-def _store_cmd(conn: sqlite3.Connection, event: CmdEvent) -> bool:
-    """Insert the event and its run. Returns False if the event was already stored."""
+def _store_cmd(conn: sqlite3.Connection, event: CmdEvent) -> str | None:
+    """Insert the event and its run. Returns the run id, or None if already stored."""
     run_id = _insert_event(conn, "cmd", event.ts_start, event.host, event.model_dump())
     if run_id is None:
-        return False
+        return None
     conn.execute(
         "INSERT INTO runs (id, session, host, shell, cwd, cmd, ts_start, ts_end, exit, user,"
         " env_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -263,7 +305,7 @@ def _store_cmd(conn: sqlite3.Connection, event: CmdEvent) -> bool:
             event.conda_env or _env_basename(event.env_prefix),
         ),
     )
-    return True
+    return run_id
 
 
 def _env_basename(prefix: str | None) -> str | None:

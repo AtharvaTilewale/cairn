@@ -17,7 +17,10 @@ from rich.table import Table
 from ulid import ULID
 
 from cairnlab import config
+from cairnlab.capture.envsnap import EnvSnapshotter
+from cairnlab.capture.gitsnap import GitSnapshotter
 from cairnlab.capture.hooks import activation_script, deactivation_script
+from cairnlab.capture.ingest import Snapshots
 from cairnlab.capture.ingest import ingest as ingest_events
 from cairnlab.capture.watcher import EventWriter, FileTracker, IgnoreRules
 from cairnlab.capture.watcher import watch as watch_files
@@ -177,7 +180,8 @@ def ingest() -> None:
         raise typer.Exit(1)
     conn = db.connect(config.db_path(home))
     db.migrate(conn)
-    stats = ingest_events(conn, config.events_dir(home), config.objects_dir(home))
+    snapshots = Snapshots(host=config.local_host(), git=GitSnapshotter(), env=EnvSnapshotter())
+    stats = ingest_events(conn, config.events_dir(home), config.objects_dir(home), snapshots)
     conn.close()
     out.print(
         f"Ingested {stats.runs} new runs and {stats.files_seen} file events"
