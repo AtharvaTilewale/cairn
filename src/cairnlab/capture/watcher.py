@@ -29,7 +29,7 @@ from ulid import ULID
 
 from cairnlab.capture.fingerprint import LARGE_BYTES, fingerprint
 from cairnlab.config import IGNORE_FILE
-from cairnlab.store.models import format_ts
+from cairnlab.store.models import format_ts, utc_now
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +80,25 @@ class IgnoreRules:
         return self.spec.match_file(rel + "/" if is_dir else rel)
 
 
-def walk(root: Path, rules: IgnoreRules) -> Iterator[Path]:
+class MultiRootRules:
+    """Ignore rules for several roots: each path uses the rules of the root it is under."""
+
+    def __init__(self, roots: list[Path]):
+        self.by_root = [IgnoreRules(r) for r in roots]
+
+    def ignored(self, path: Path, is_dir: bool = False) -> bool:
+        for rules in self.by_root:
+            if path.is_relative_to(rules.root):
+                return rules.ignored(path, is_dir)
+        return True
+
+
+def rules_for(roots: list[Path]) -> "IgnoreRules | MultiRootRules":
+    """Ignore rules covering ``roots``."""
+    return IgnoreRules(roots[0]) if len(roots) == 1 else MultiRootRules(roots)
+
+
+def walk(root: Path, rules: "IgnoreRules | MultiRootRules") -> Iterator[Path]:
     """Every non-ignored regular file under ``root``, skipping ignored directories."""
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
@@ -113,16 +131,17 @@ def open_by_any_process(path: Path) -> bool:
 
 
 class EventWriter:
-    """Appends file events, one line per ``write()``, to ``<host>-<day>-watch.jsonl``.
+    """Appends events, one line per ``write()``, to ``<host>-<day>-<suffix>.jsonl``.
 
-    The watcher has its own file per day so its lines never interleave with the
-    shell hook's.
+    Each writer (watcher, ``cairn run``) has its own file per day, so its lines never
+    interleave with the shell hook's. Events default to ``type: file``.
     """
 
-    def __init__(self, events_dir: Path, host: str, user: str):
+    def __init__(self, events_dir: Path, host: str, user: str, suffix: str = "watch"):
         self.events_dir = events_dir
         self.host = host
         self.user = user
+        self.suffix = suffix
 
     def write(self, event: dict) -> None:
         event = {
@@ -135,8 +154,8 @@ class EventWriter:
         }
         line = (json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
         self.events_dir.mkdir(parents=True, exist_ok=True)
-        day = event["ts"][:10]
-        path = self.events_dir / f"{self.host}-{day}-watch.jsonl"
+        when = event.get("ts") or event.get("ts_end") or event.get("ts_start") or utc_now()
+        path = self.events_dir / f"{self.host}-{when[:10]}-{self.suffix}.jsonl"
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
         try:
             os.write(fd, line)

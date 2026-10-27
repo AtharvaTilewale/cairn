@@ -73,8 +73,6 @@ def test_status_on_empty_store(project):
     "args",
     [
         ["sync", "cluster"],
-        ["run", "--", "python", "fit.py"],
-        ["run", "--bg", "--", "sleep", "1"],
         ["note", "why I changed the cutoff"],
         ["entry", "today"],
         ["trace", "fig.png"],

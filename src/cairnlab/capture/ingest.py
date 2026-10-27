@@ -21,7 +21,7 @@ from cairnlab.capture.envsnap import EnvSnapshotter
 from cairnlab.capture.gitsnap import GitSnapshotter
 from cairnlab.provenance.objects import has_object
 from cairnlab.store import db, repo
-from cairnlab.store.models import CmdEvent, FileEvent, utc_now
+from cairnlab.store.models import CmdEvent, FileEvent, RunEnd, RunStart, utc_now
 
 log = logging.getLogger(__name__)
 
@@ -98,11 +98,20 @@ class Snapshots:
     git: GitSnapshotter
     env: EnvSnapshotter
 
-    def apply(self, conn: sqlite3.Connection, run_id: str, event: CmdEvent) -> None:
-        if event.host != self.host:
+    def apply(
+        self,
+        conn: sqlite3.Connection,
+        run_id: str,
+        host: str,
+        cwd: str,
+        ts_start: str,
+        ts_end: str,
+        env_prefix: str | None,
+    ) -> None:
+        if host != self.host:
             return
-        git = self.git.snapshot(event.cwd, event.ts_start, event.ts_end)
-        env_hash = self.env.env_hash(event.env_prefix, event.ts_end) if event.env_prefix else None
+        git = self.git.snapshot(cwd, ts_start, ts_end)
+        env_hash = self.env.env_hash(env_prefix, ts_end) if env_prefix else None
         if git is None and env_hash is None:
             return
         conn.execute(
@@ -125,12 +134,28 @@ class IngestStats:
 
     files: int = 0  # JSONL files read
     lines: int = 0
-    runs: int = 0  # cmd events stored
+    runs: int = 0  # cmd events and background-run starts stored
     files_seen: int = 0  # file events stored
     earliest: str | None = None  # earliest time any newly stored event touches
     duplicates: int = 0
     malformed: int = 0
     unsupported: int = 0
+    lost: int = 0  # background runs found dead without an end event
+
+
+@dataclass
+class _Pass:
+    conn: sqlite3.Connection
+    stats: IngestStats
+    objects_dir: Path | None
+    snapshots: Snapshots | None
+
+    def touch(self, ts: str) -> None:
+        if self.stats.earliest is None or ts < self.stats.earliest:
+            self.stats.earliest = ts
+
+
+MODELS = {"cmd": CmdEvent, "file": FileEvent, "run_start": RunStart, "run_end": RunEnd}
 
 
 def ingest(
@@ -138,51 +163,50 @@ def ingest(
     events_dir: Path,
     objects_dir: Path | None = None,
     snapshots: Snapshots | None = None,
+    lost_check_host: str | None = None,
 ) -> IngestStats:
     """Ingest every new complete line of every ``*.jsonl`` file in ``events_dir``.
 
     ``objects_dir`` is this store's object store; versions found there are marked stored.
     ``snapshots`` adds git and environment state to runs recorded on this machine.
+    ``lost_check_host``: background runs on this host whose monitor is gone are
+    marked ``lost``.
     """
     stats = IngestStats()
-    if not events_dir.is_dir():
-        return stats
-    offsets = repo.ingest_offsets(conn)
-    for path in sorted(events_dir.glob("*.jsonl")):
-        offset = offsets.get(path.name, 0)
-        size = path.stat().st_size
-        if size < offset:
-            log.warning(
-                "%s shrank (%d < %d bytes); re-reading from the start", path.name, size, offset
-            )
-            offset = 0
-        if size == offset:
-            continue
-        with path.open("rb") as fh:
-            fh.seek(offset)
-            data = fh.read(size - offset)
-        end = data.rfind(b"\n")
-        if end < 0:
-            continue  # only a partial line so far
-        stats.files += 1
-        with db.transaction(conn):
-            pos = offset
-            for n, raw in enumerate(data[: end + 1].splitlines(keepends=True), start=1):
-                where = f"{path.name} line {n} of new data (byte {pos})"
-                _ingest_line(conn, raw, where, stats, objects_dir, snapshots)
-                pos += len(raw)
-            repo.set_ingest_offset(conn, path.name, offset + end + 1, utc_now())
+    ctx = _Pass(conn, stats, objects_dir, snapshots)
+    if events_dir.is_dir():
+        offsets = repo.ingest_offsets(conn)
+        for path in sorted(events_dir.glob("*.jsonl")):
+            _ingest_file(ctx, path, offsets.get(path.name, 0))
+    if lost_check_host:
+        stats.lost = _mark_lost(conn, lost_check_host)
     return stats
 
 
-def _ingest_line(
-    conn: sqlite3.Connection,
-    raw: bytes,
-    where: str,
-    stats: IngestStats,
-    objects_dir: Path | None,
-    snapshots: Snapshots | None,
-) -> None:
+def _ingest_file(ctx: _Pass, path: Path, offset: int) -> None:
+    size = path.stat().st_size
+    if size < offset:
+        log.warning("%s shrank (%d < %d bytes); re-reading from the start", path.name, size, offset)
+        offset = 0
+    if size == offset:
+        return
+    with path.open("rb") as fh:
+        fh.seek(offset)
+        data = fh.read(size - offset)
+    end = data.rfind(b"\n")
+    if end < 0:
+        return  # only a partial line so far
+    ctx.stats.files += 1
+    with db.transaction(ctx.conn):
+        pos = offset
+        for n, raw in enumerate(data[: end + 1].splitlines(keepends=True), start=1):
+            _ingest_line(ctx, raw, f"{path.name} line {n} of new data (byte {pos})")
+            pos += len(raw)
+        repo.set_ingest_offset(ctx.conn, path.name, offset + end + 1, utc_now())
+
+
+def _ingest_line(ctx: _Pass, raw: bytes, where: str) -> None:
+    stats = ctx.stats
     text = raw.decode("utf-8", errors="replace").strip()
     if not text:
         return
@@ -198,7 +222,7 @@ def _ingest_line(
         log.warning("%s: not a JSON object; skipped", where)
         return
     kind = obj.get("type")
-    model = {"cmd": CmdEvent, "file": FileEvent}.get(kind)
+    model = MODELS.get(kind)
     if model is None:
         stats.unsupported += 1
         log.info("%s: event type %r not ingested yet; skipped", where, kind)
@@ -213,32 +237,144 @@ def _ingest_line(
         log.warning("%s: invalid %s event (%s); skipped", where, kind, problems)
         return
 
-    if isinstance(event, CmdEvent):
-        if looks_secret(event.cmd):
-            event.cmd = REDACTED
-        run_id = _store_cmd(conn, event)
-        if run_id:
-            stats.runs += 1
-            _touch(stats, event.ts_start)
-            if snapshots:
-                snapshots.apply(conn, run_id, event)
-        else:
-            stats.duplicates += 1
-    elif _store_file(conn, event, objects_dir):
-        stats.files_seen += 1
-        _touch(stats, event.ts)
-    else:
+    stored = {
+        CmdEvent: _on_cmd,
+        FileEvent: _on_file,
+        RunStart: _on_run_start,
+        RunEnd: _on_run_end,
+    }[type(event)](ctx, event)
+    if not stored:
         stats.duplicates += 1
 
 
-def _touch(stats: IngestStats, ts: str) -> None:
-    if stats.earliest is None or ts < stats.earliest:
-        stats.earliest = ts
+def _on_cmd(ctx: _Pass, event: CmdEvent) -> bool:
+    if looks_secret(event.cmd):
+        event.cmd = REDACTED
+    run_id = _store_cmd(ctx.conn, event)
+    if not run_id:
+        return False
+    ctx.stats.runs += 1
+    ctx.touch(event.ts_start)
+    if ctx.snapshots:
+        ctx.snapshots.apply(
+            ctx.conn, run_id, event.host, event.cwd, event.ts_start, event.ts_end, event.env_prefix
+        )
+    return True
 
 
-def _insert_event(conn: sqlite3.Connection, kind: str, ts: str, host: str, obj: dict) -> str | None:
-    """Insert an events row; returns its new ULID, or None if the hook id was seen before."""
-    event_id = str(ULID.from_datetime(datetime.fromisoformat(ts)))
+def _on_file(ctx: _Pass, event: FileEvent) -> bool:
+    if not _store_file(ctx.conn, event, ctx.objects_dir):
+        return False
+    ctx.stats.files_seen += 1
+    ctx.touch(event.ts)
+    return True
+
+
+def _on_run_start(ctx: _Pass, event: RunStart) -> bool:
+    """A background run began: a run row with no end yet (status running)."""
+    if looks_secret(event.cmd):
+        event.cmd = REDACTED
+    if (
+        _insert_event(
+            ctx.conn,
+            "run_start",
+            event.ts_start,
+            event.host,
+            event.model_dump(),
+            event_id=event.run_id,
+        )
+        is None
+    ):
+        return False
+    ctx.conn.execute(
+        "INSERT INTO runs (id, session, host, shell, cwd, cmd, ts_start, user, env_name, status)"
+        " VALUES (?, ?, ?, 'cairn-run', ?, ?, ?, ?, ?, 'running')",
+        (
+            event.run_id,
+            event.session,
+            event.host,
+            event.cwd,
+            event.cmd,
+            event.ts_start,
+            event.user,
+            event.conda_env or _env_basename(event.env_prefix),
+        ),
+    )
+    ctx.stats.runs += 1
+    ctx.touch(event.ts_start)
+    if ctx.snapshots:
+        ctx.snapshots.apply(
+            ctx.conn,
+            event.run_id,
+            event.host,
+            event.cwd,
+            event.ts_start,
+            event.ts_start,
+            event.env_prefix,
+        )
+    # The end may have been ingested first (e.g. from another file).
+    row = ctx.conn.execute(
+        "SELECT payload FROM events WHERE type = 'run_end'"
+        " AND json_extract(payload, '$.run_id') = ?",
+        (event.run_id,),
+    ).fetchone()
+    if row:
+        _finish_run(ctx, RunEnd.model_validate_json(row[0]))
+    return True
+
+
+def _on_run_end(ctx: _Pass, event: RunEnd) -> bool:
+    if _insert_event(ctx.conn, "run_end", event.ts_end, event.host, event.model_dump()) is None:
+        return False
+    _finish_run(ctx, event)
+    return True
+
+
+def _finish_run(ctx: _Pass, event: RunEnd) -> None:
+    cur = ctx.conn.execute(
+        "UPDATE runs SET ts_end = ?, exit = ?, status = 'done' WHERE id = ?",
+        (event.ts_end, event.exit, event.run_id),
+    )
+    if not cur.rowcount:
+        return  # the start has not arrived yet; _on_run_start will finish it
+    # The linker reads the wrapper's exact outputs from the run's own event payload.
+    ctx.conn.execute(
+        "UPDATE events SET payload = json_set(payload, '$.wrapper', json(?)) WHERE id = ?",
+        (json.dumps(event.wrapper), event.run_id),
+    )
+    (start,) = ctx.conn.execute(
+        "SELECT ts_start FROM runs WHERE id = ?", (event.run_id,)
+    ).fetchone()
+    ctx.touch(start)
+
+
+def _mark_lost(conn: sqlite3.Connection, host: str) -> int:
+    """Mark running background runs on ``host`` whose monitor process is gone."""
+    from cairnlab.capture.longrun import monitor_alive
+
+    lost = 0
+    rows = conn.execute(
+        "SELECT r.id, json_extract(e.payload, '$.monitor_pid') FROM runs r"
+        " JOIN events e ON e.id = r.id WHERE r.status = 'running' AND r.host = ?",
+        (host,),
+    ).fetchall()
+    for run_id, pid in rows:
+        if pid is None or not monitor_alive(int(pid), run_id):
+            conn.execute("UPDATE runs SET status = 'lost' WHERE id = ?", (run_id,))
+            lost += 1
+    return lost
+
+
+def _insert_event(
+    conn: sqlite3.Connection,
+    kind: str,
+    ts: str,
+    host: str,
+    obj: dict,
+    event_id: str | None = None,
+) -> str | None:
+    """Insert an events row; returns its id, or None if the hook id was seen before."""
+    event_id = event_id or str(ULID.from_datetime(datetime.fromisoformat(ts)))
     payload = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
     cur = conn.execute(
         "INSERT OR IGNORE INTO events (id, type, ts, host, payload) VALUES (?, ?, ?, ?, ?)",

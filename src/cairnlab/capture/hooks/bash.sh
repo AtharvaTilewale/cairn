@@ -24,7 +24,7 @@
 #   PROMPT_COMMAND are never mistaken for the start of the user's next command.
 
 __cairn_marker='[cairn] '
-__cairn_ignore=' ls cd pwd clear history '
+__cairn_ignore=' ls cd pwd clear history '  # plus "cairn note" and "cairn run"
 
 # JSON-escape $1 into __cairn_j (no fork). Valid UTF-8 passes through unchanged.
 __cairn_json_escape() {
@@ -108,7 +108,8 @@ __cairn_ignored() {
     *" $w "*) ;;
     *)
       case $c in
-        'cairn note' | 'cairn note'[[:space:]]*) ;;
+        # cairn run records itself (with exact outputs), so the hook skips it.
+        'cairn note' | 'cairn note'[[:space:]]* | 'cairn run'[[:space:]]*) ;;
         *) return 1 ;;
       esac
       ;;

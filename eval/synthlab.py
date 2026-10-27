@@ -189,6 +189,21 @@ STEPS = [
         used=["results/fit.json", "results/fit2.json"],
         flags={"ts_start_approx": True},
     ),
+    # Wrapped runs record themselves with their exact outputs (the hook skips them).
+    Step(
+        "cairn run -- python plot.py data/obs2.csv results/fit2.json --out figs/wrapped.png",
+        cmd="python plot.py data/obs2.csv results/fit2.json --out figs/wrapped.png",
+        used=["plot.py", "data/obs2.csv", "results/fit2.json"],
+        generated=["figs/wrapped.png"],
+        flags={"wrapper": True},
+    ),
+    Step(
+        "cairn run --bg -- python gen.py --n 300 --seed 3 --out data/obs3.csv",
+        cmd="python gen.py --n 300 --seed 3 --out data/obs3.csv",
+        used=["gen.py"],
+        generated=["data/obs3.csv"],
+        flags={"wrapper": True},
+    ),
     Step("sleep 1.2"),
     Step(
         'cairn note "poly model fits the tail better; using fit2 for the report"',

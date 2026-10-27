@@ -148,6 +148,9 @@ def test_secret_detection(cmd, secret):
         ("ls | wc -l", False),
         ("lsof -i", False),
         ("cairn ingest", False),
+        ("cairn run -- python fit.py", True),
+        ("cairn run --bg -- gmx mdrun -deffnm md", True),
+        ("cairn run -- python a.py && python b.py", False),
         ("cairn notebook", False),
         ("python fit.py", False),
         # Separators inside quotes do not make a compound command...

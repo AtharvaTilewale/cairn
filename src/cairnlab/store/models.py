@@ -87,6 +87,46 @@ class FileEvent(BaseModel):
         return self
 
 
+RunId = Annotated[str, Field(pattern=r"^[0-9A-HJKMNP-TV-Z]{26}$")]
+
+
+class RunStart(BaseModel):
+    """A ``cairn run --bg`` job began (section 5.5)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    v: Literal[1]
+    type: Literal["run_start"]
+    id: NonEmpty
+    run_id: RunId
+    pid: int | None
+    monitor_pid: int
+    session: str
+    host: NonEmpty
+    user: NonEmpty
+    cwd: str
+    cmd: str
+    ts_start: Timestamp
+    conda_env: str | None = None
+    env_prefix: str | None = None
+
+
+class RunEnd(BaseModel):
+    """A ``cairn run --bg`` job ended, with its exact outputs."""
+
+    model_config = ConfigDict(extra="allow")
+
+    v: Literal[1]
+    type: Literal["run_end"]
+    id: NonEmpty
+    run_id: RunId
+    host: NonEmpty
+    user: NonEmpty
+    exit: int | None
+    ts_end: Timestamp
+    wrapper: dict = Field(default_factory=dict)
+
+
 class Event(BaseModel):
     """A row of the ``events`` table."""
 
@@ -117,3 +157,4 @@ class Run(BaseModel):
     git_branch: str | None = None
     git_diffstat: str | None = None
     env_name: str | None = None
+    status: str = "done"  # done|running|lost

@@ -22,7 +22,9 @@ from cairnlab.capture.gitsnap import GitSnapshotter
 from cairnlab.capture.hooks import activation_script, deactivation_script
 from cairnlab.capture.ingest import Snapshots
 from cairnlab.capture.ingest import ingest as ingest_events
-from cairnlab.capture.watcher import EventWriter, FileTracker, IgnoreRules
+from cairnlab.capture.longrun import start_background
+from cairnlab.capture.runwrap import WrapContext, run_wrapped
+from cairnlab.capture.watcher import EventWriter, FileTracker, rules_for
 from cairnlab.capture.watcher import watch as watch_files
 from cairnlab.provenance.linker import GRACE
 from cairnlab.provenance.linker import link as link_runs
@@ -136,7 +138,7 @@ def status() -> None:
     if recent:
         table = Table("start (UTC)", "host", "exit", "command", title="Recent runs")
         for r in recent:
-            exit_code = "?" if r.exit is None else str(r.exit)
+            exit_code = r.status if r.status != "done" else "?" if r.exit is None else str(r.exit)
             style = "red" if r.exit not in (0, None) else None
             table.add_row(r.ts_start, r.host, exit_code, r.cmd, style=style)
         out.print(table)
@@ -188,7 +190,13 @@ def ingest() -> None:
     conn = db.connect(config.db_path(home))
     db.migrate(conn)
     snapshots = Snapshots(host=config.local_host(), git=GitSnapshotter(), env=EnvSnapshotter())
-    stats = ingest_events(conn, config.events_dir(home), config.objects_dir(home), snapshots)
+    stats = ingest_events(
+        conn,
+        config.events_dir(home),
+        config.objects_dir(home),
+        snapshots,
+        lost_check_host=config.local_host(),
+    )
     linked = None
     if stats.earliest is not None:
         # New events can change the edges of any run whose window reaches them.
@@ -237,11 +245,16 @@ RootOpt = Annotated[
 ]
 
 
-def _file_tracker(home: Path, roots: RootOpt) -> tuple[FileTracker, list[Path]]:
+def _cairn_user() -> str:
     user = os.environ.get("CAIRN_USER", "")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", user):
         err.print("[red]Set CAIRN_USER[/red] (letters, digits, '.', '_', '-') first.")
         raise typer.Exit(1)
+    return user
+
+
+def _file_tracker(home: Path, roots: RootOpt) -> tuple[FileTracker, list[Path]]:
+    user = _cairn_user()
     if roots:
         roots = [r.expanduser().resolve() for r in roots]
     else:
@@ -252,25 +265,12 @@ def _file_tracker(home: Path, roots: RootOpt) -> tuple[FileTracker, list[Path]]:
         roots = [project]
     host = config.local_host()
     tracker = FileTracker(
-        rules=IgnoreRules(roots[0]) if len(roots) == 1 else _MultiRootRules(roots),
+        rules=rules_for(roots),
         writer=EventWriter(config.events_dir(home), host=host, user=user),
         objects_dir=config.objects_dir(home),
         state_path=config.state_dir(home) / f"files-{host}.json",
     )
     return tracker, roots
-
-
-class _MultiRootRules:
-    """Ignore rules for several roots: each path uses the rules of the root it is under."""
-
-    def __init__(self, roots: list[Path]):
-        self.by_root = [IgnoreRules(r) for r in roots]
-
-    def ignored(self, path: Path, is_dir: bool = False) -> bool:
-        for rules in self.by_root:
-            if path.is_relative_to(rules.root):
-                return rules.ignored(path, is_dir)
-        return True
 
 
 @app.command()
@@ -344,8 +344,36 @@ def run(
     ctx: typer.Context,
     bg: Annotated[bool, typer.Option("--bg", help="Detached long run.")] = False,
 ) -> None:
-    """Run a command with before/after snapshots: cairn run [--bg] -- <cmd>."""
-    _todo("run")
+    """Run a command and record exactly which files it wrote: cairn run [--bg] -- <cmd>.
+
+    A single quoted argument runs through bash (pipes and redirects work). With --bg
+    the command runs detached, its output goes to .cairn/logs/<run_id>.log, and its
+    start and end are recorded even if this terminal closes.
+    """
+    argv = list(ctx.args)
+    if not argv:
+        err.print("Usage: [bold]cairn run [--bg] -- <command> [args...][/bold]")
+        raise typer.Exit(2)
+    home = config.find_home()
+    if home is None:
+        err.print("[red]No Cairn store:[/red] set CAIRN_HOME or run [bold]cairn init[/bold].")
+        raise typer.Exit(1)
+    user = _cairn_user()
+    cwd = Path.cwd()
+    project = config.project_root(home)
+    roots = [project] if project and cwd.is_relative_to(project) else [cwd]
+    wctx = WrapContext(
+        home=home,
+        roots=roots,
+        host=config.local_host(),
+        user=user,
+        session=os.environ.get("CAIRN_SESSION") or str(ULID()),
+    )
+    if bg:
+        run_id, log = start_background(wctx, argv, cwd)
+        err.print(f"Started run {run_id} in the background. Output: {log}")
+        return
+    raise typer.Exit(run_wrapped(wctx, argv, cwd))
 
 
 @app.command()

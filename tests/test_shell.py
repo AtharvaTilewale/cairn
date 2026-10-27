@@ -415,3 +415,23 @@ def test_records_environment(tmp_path):
     assert by_cmd["echo conda"]["conda_env"] == "md"
     assert by_cmd["echo conda"]["env_prefix"] == "/opt/conda/envs/md"
     assert by_cmd["echo venv"]["env_prefix"] == '/home/x/my "venv"'
+
+
+def test_cairn_run_is_recorded_once_by_the_wrapper(tmp_path):
+    s = run_shell(
+        tmp_path,
+        [
+            "cairn init > /dev/null",
+            ACTIVATE,
+            "cairn run -- python3 -c \"open('out.csv', 'w').write('1')\"",
+            "echo after",
+        ],
+    )
+    cmd_events = [e for e in s.events if e["type"] == "cmd"]
+    hook = [e for e in cmd_events if e["shell"] == "bash"]
+    wrapped = [e for e in cmd_events if e["shell"] == "cairn-run"]
+    assert [e["cmd"] for e in hook] == ["echo after"]
+    assert len(wrapped) == 1 and wrapped[0]["cmd"].startswith("python3 -c")
+    # Same terminal session as the hook's events.
+    assert wrapped[0]["session"] == hook[0]["session"]
+    assert [Path(p).name for p in wrapped[0]["wrapper"]["generated"]] == ["out.csv"]
