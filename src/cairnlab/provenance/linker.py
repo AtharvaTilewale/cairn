@@ -210,9 +210,12 @@ def _artifact(conn: sqlite3.Connection, host: str, path: str) -> str | None:
 
 
 def _current_version(conn: sqlite3.Connection, artifact_id: str, at: str) -> str | None:
-    """The version of an artefact current at ``at`` (None if absent or deleted)."""
+    """The version of an artefact current just before ``at`` (None if absent or deleted).
+
+    Strictly before: a change stamped at the run's own start was made by the run.
+    """
     row = conn.execute(
-        "SELECT version_id FROM file_events WHERE artifact_id = ? AND ts <= ?"
+        "SELECT version_id FROM file_events WHERE artifact_id = ? AND ts < ?"
         " ORDER BY ts DESC, event_id DESC LIMIT 1",
         (artifact_id, at),
     ).fetchone()
