@@ -305,3 +305,31 @@ def test_close_does_not_shortcut_checkpoints(env):
     tracker.notify(f, "modified", closed=True)
     clock.advance(1)
     assert tracker.process_due() == 0
+
+
+def test_event_time_is_the_write_time_when_mtime_is_fresh(env):
+    """Late delivery must not push a write into the next run's window."""
+    root, events, tracker, clock = env
+    f = root / "fig.png"
+    write(f, "png", mtime=clock.t - 0.8)  # written 0.8 s before the event was observed
+    tracker.notify(f, "created", closed=True)
+    clock.advance(0.2)
+    tracker.process_due()
+    (ev,) = read_events(events)
+    assert ev["ts"] == ev["mtime"]
+
+
+def test_preserved_old_mtime_keeps_observed_time(env):
+    """cp -p / rsync -a keep an old mtime: the change still happened now."""
+    root, events, tracker, clock = env
+    f = root / "copied.csv"
+    write(f, "x", mtime=clock.t - 86400)
+    tracker.notify(f, "created", closed=True)
+    observed = clock.t
+    clock.advance(0.2)
+    tracker.process_due()
+    (ev,) = read_events(events)
+    assert ev["ts"] != ev["mtime"]
+    from datetime import datetime
+
+    assert abs(datetime.fromisoformat(ev["ts"]).timestamp() - observed) < 0.01

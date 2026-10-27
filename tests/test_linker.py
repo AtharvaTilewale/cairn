@@ -271,3 +271,114 @@ def test_grace_stops_at_the_next_run(store):
     assert ("generated", "data/obs.csv", "a", "window") in edges(conn, "python gen.py --n 5")
     assert ("generated", "late.csv", "b", "window") in edges(conn, "python other.py")
     assert not any(p == "late.csv" for _, p, _, _ in edges(conn, "python gen.py --n 5"))
+
+
+def wrapped(cmd_text: str, start: float, end: float, generated: list[str], **kw) -> dict:
+    return {
+        **cmd(
+            cmd_text,
+            start,
+            end,
+            shell="cairn-run",
+            wrapper={"generated": [f"{ROOT}/{g}" for g in generated], "deleted": []},
+        ),
+        **kw,
+    }
+
+
+def test_wrapper_does_not_claim_a_nested_runs_output(store):
+    """A long background run's tree diff also sees what other commands wrote meanwhile."""
+    conn, load = store
+    load(
+        wrapped("python long.py", 10, 60, ["long.out", "summary.txt"]),
+        cmd("python summarize.py", 30, 31),
+        fev("summary.txt", 30.5, "a", "created"),
+        fev("long.out", 59, "b", "created"),
+    )
+    long_edges = edges(conn, "python long.py")
+    assert ("generated", "long.out", "b", "wrapper") in long_edges
+    assert not any(p == "summary.txt" for _, p, _, _ in long_edges)
+    assert ("generated", "summary.txt", "a", "window") in edges(conn, "python summarize.py")
+    # Others ran during the wrapped run, so its claim is strong but not certain.
+    assert conf(conn, "python long.py", "long.out", "generated") == 0.8
+
+
+def test_wrapper_alone_is_exact(store):
+    conn, load = store
+    load(wrapped("python a.py", 10, 12, ["out.csv"]), fev("out.csv", 12, "a", "created"))
+    assert conf(conn, "python a.py", "out.csv", "generated") == 1.0
+
+
+def bg_start(cmd_text: str, start: float, run_id: str) -> dict:
+    return {
+        "v": 1,
+        "type": "run_start",
+        "id": f"{run_id}-start",
+        "run_id": run_id,
+        "pid": 1,
+        "monitor_pid": 1,
+        "session": "S",
+        "host": "hp",
+        "user": "t",
+        "cwd": ROOT,
+        "cmd": cmd_text,
+        "ts_start": ts(start),
+    }
+
+
+def bg_end(run_id: str, end: float, generated: list[str], written: list[str]) -> dict:
+    return {
+        "v": 1,
+        "type": "run_end",
+        "id": f"{run_id}-end",
+        "run_id": run_id,
+        "host": "hp",
+        "user": "t",
+        "exit": 0,
+        "ts_end": ts(end),
+        "wrapper": {
+            "generated": [f"{ROOT}/{g}" for g in generated],
+            "deleted": [],
+            "written": [f"{ROOT}/{w}" for w in written],
+        },
+    }
+
+
+def test_background_job_owns_files_it_held_open(store):
+    """mdrun writes md.log for hours while the user analyses in the same directory."""
+    from ulid import ULID
+
+    conn, load = store
+    rid = str(ULID())
+    load(
+        bg_start("gmx mdrun -v", 10, rid),
+        fev("md.log", 20, "a", "created"),
+        cmd("python analyse.py", 30, 32),
+        fev("md.log", 31, "b"),  # mdrun keeps writing during the analysis
+        fev("plot.png", 31.5, "c", "created"),
+        fev("md.log", 59, "d"),
+        bg_end(rid, 60, ["md.log", "plot.png"], ["md.log"]),
+    )
+    assert edges(conn, "python analyse.py") == {("generated", "plot.png", "c", "window")}
+    md = edges(conn, "gmx mdrun -v")
+    assert ("generated", "md.log", "d", "wrapper") in md
+    assert not any(p == "plot.png" for _, p, _, _ in md)
+    assert conf(conn, "gmx mdrun -v", "md.log", "generated") == 1.0
+
+
+def test_background_unseen_change_outside_cwd_is_not_claimed(store):
+    from ulid import ULID
+
+    conn, load = store
+    rid = str(ULID())
+    start = {**bg_start("python job.py", 10, rid), "cwd": f"{ROOT}/runs"}
+    load(
+        start,
+        fev("runs/out.csv", 15, "a", "created"),
+        fev("notes/todo.md", 16, "b", "created"),  # edited in an editor meanwhile
+        bg_end(rid, 20, ["runs/out.csv", "notes/todo.md"], []),
+    )
+    got = edges(conn, "python job.py")
+    assert ("generated", "runs/out.csv", "a", "wrapper") in got
+    assert not any(p == "notes/todo.md" for _, p, _, _ in got)
+    assert conf(conn, "python job.py", "runs/out.csv", "generated") == 0.6

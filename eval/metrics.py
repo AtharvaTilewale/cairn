@@ -11,13 +11,20 @@ from pathlib import Path
 
 
 def _align(expected: list[dict], runs: list[sqlite3.Row]) -> list[tuple[dict, sqlite3.Row]]:
-    """Match expected steps to recorded runs in order, by command text."""
-    pairs, j = [], 0
+    """Match expected steps to recorded runs by command text.
+
+    In order where possible; a step whose run was recorded out of order (a background
+    job's monitor can start after the next command) falls back to any unmatched run.
+    """
+    pairs, used, j = [], set(), 0
     for step in expected:
-        for k in range(j, len(runs)):
-            if runs[k]["cmd"] == step["cmd"]:
+        order = list(range(j, len(runs))) + list(range(0, j))
+        for k in order:
+            if k not in used and runs[k]["cmd"] == step["cmd"]:
                 pairs.append((step, runs[k]))
-                j = k + 1
+                used.add(k)
+                if k >= j:
+                    j = k + 1
                 break
     return pairs
 

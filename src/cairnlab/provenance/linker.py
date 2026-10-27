@@ -3,14 +3,18 @@
 Methods, applied in this order (an edge found by an earlier method is kept):
 
 1. **wrapper (1.0):** ``cairn run`` diffed the tree before and after, so its
-   ``generated`` list is exact. Inputs still come from the methods below.
+   ``generated`` list is exact when nothing else ran meanwhile (0.8 otherwise). A
+   change inside a later, nested run's window belongs to that run. For ``--bg`` jobs,
+   files the job was seen holding open for writing are its outputs (1.0); other
+   changes count only under its ``cwd`` (0.6). Inputs come from the methods below.
 2. **argpath (0.9):** command tokens that resolve (from ``cwd``, following ``cd``
    inside the line) to known artefacts are ``used``; targets of output flags
    (``-o``, ``--out``, ``-deffnm NAME`` -> ``NAME.*``), redirections and the last
    argument of ``cp``/``mv``-style commands are ``generated``.
 3. **window (0.7):** files under ``cwd`` that changed in ``[ts_start, ts_end + 2 s]``
    are ``generated`` (the grace stops at the next run's start on the host); 0.4 when
-   another (non-wrapper) run on the host overlaps.
+   another (non-wrapper) run on the host overlaps. Versions another run claims
+   explicitly, and files a background job holds open, are excluded.
    Versions already claimed by a ``cairn run`` wrapper are excluded.
 4. **readset (0.6):** files a script reads/writes according to Muse Spark
    (``provenance/readset.py``), when a reader is supplied.
@@ -34,7 +38,15 @@ from cairnlab.store.models import format_ts
 log = logging.getLogger(__name__)
 
 GRACE = timedelta(seconds=2)
-CONFIDENCE = {"wrapper": 1.0, "argpath": 0.9, "window": 0.7, "ambiguous": 0.4, "readset": 0.6}
+CONFIDENCE = {
+    "wrapper": 1.0,
+    "wrapper_shared": 0.8,  # other runs overlapped the wrapped one
+    "wrapper_unseen": 0.6,  # background job's diff, never seen open by the job
+    "argpath": 0.9,
+    "window": 0.7,
+    "ambiguous": 0.4,
+    "readset": 0.6,
+}
 
 OUTPUT_FLAGS = {"-o", "--out", "--output", "--outfile", "--output-file", "-O"}
 PREFIX_FLAGS = {"-deffnm"}  # GROMACS: -deffnm md writes md.xtc, md.edr, md.log, ...
@@ -207,13 +219,21 @@ def _current_version(conn: sqlite3.Connection, artifact_id: str, at: str) -> str
     return row[0] if row else None
 
 
-def _window_version(conn: sqlite3.Connection, artifact_id: str, start: str, end: str):
+def _window_change(
+    conn: sqlite3.Connection, artifact_id: str, start: str, end: str
+) -> tuple[str, str] | None:
+    """(version, time) of the artefact's last change within ``[start, end]``."""
     row = conn.execute(
-        "SELECT version_id FROM file_events WHERE artifact_id = ? AND ts >= ? AND ts <= ?"
+        "SELECT version_id, ts FROM file_events WHERE artifact_id = ? AND ts >= ? AND ts <= ?"
         " AND version_id IS NOT NULL ORDER BY ts DESC, event_id DESC LIMIT 1",
         (artifact_id, start, end),
     ).fetchone()
-    return row[0] if row else None
+    return (row[0], row[1]) if row else None
+
+
+def _window_version(conn: sqlite3.Connection, artifact_id: str, start: str, end: str):
+    hit = _window_change(conn, artifact_id, start, end)
+    return hit[0] if hit else None
 
 
 def link(
@@ -224,7 +244,7 @@ def link(
     Runs still in progress are always included.
     """
     stats = LinkStats()
-    sql = "SELECT r.*, e.payload FROM runs r JOIN events e ON e.id = r.id"
+    sql = "SELECT r.*, e.payload, e.type AS etype FROM runs r JOIN events e ON e.id = r.id"
     params: tuple = ()
     if since is not None:
         sql += " WHERE r.ts_end IS NULL OR r.ts_end >= ?"
@@ -269,11 +289,37 @@ def _link_run(conn, run, reader: Reader | None, stats: LinkStats) -> None:
     # 1. wrapper
     wrapper = _wrapper(run)
     if wrapper is not None and end is not None:
+        # The tree diff also sees writes by other commands that ran meanwhile (a
+        # background run lasts hours): a change inside a later, nested run's window is
+        # that run's, and any overlap makes this run's claim less than certain.
+        others = conn.execute(
+            "SELECT ts_start, ts_end FROM runs WHERE host = ? AND id != ? AND ts_start > ?"
+            " AND ts_start <= ?",
+            (host, run_id, start, end),
+        ).fetchall()
+        background = run["etype"] == "run_start"
+        written = set(wrapper.get("written", []))
+        under_cwd = cwd.rstrip("/") + "/"
+        shared = CONFIDENCE["wrapper"] if not others else CONFIDENCE["wrapper_shared"]
         for path in wrapper.get("generated", []):
             art = _artifact(conn, host, path)
-            v = _window_version(conn, art, start, end) if art else None
-            if v:
+            hit = _window_change(conn, art, start, end) if art else None
+            if hit is None:
+                continue
+            v, t = hit
+            if path in written:  # the job itself held it open for writing
                 _add(conn, stats, run_id, v, "generated", "wrapper", CONFIDENCE["wrapper"])
+                continue
+            nested = any(
+                o_start <= t and o_end is not None and _plus(o_end, GRACE) >= t
+                for o_start, o_end in others
+            )
+            if nested:
+                continue
+            if not background:
+                _add(conn, stats, run_id, v, "generated", "wrapper", shared)
+            elif path.startswith(under_cwd):
+                _add(conn, stats, run_id, v, "generated", "wrapper", CONFIDENCE["wrapper_unseen"])
 
     # 2. argpath
     paths = command_paths(run["cmd"] or "", PurePosixPath(cwd))
@@ -312,18 +358,28 @@ def _link_run(conn, run, reader: Reader | None, stats: LinkStats) -> None:
         confidence = CONFIDENCE["ambiguous" if overlap else "window"]
         under = cwd.rstrip("/") + "/"
         rows = conn.execute(
-            "SELECT fe.artifact_id, fe.version_id FROM file_events fe"
+            "SELECT fe.artifact_id, fe.version_id, a.path FROM file_events fe"
             " JOIN artifacts a ON a.id = fe.artifact_id"
             " WHERE a.host = ? AND fe.ts >= ? AND fe.ts <= ? AND fe.version_id IS NOT NULL"
             " AND substr(a.path, 1, ?) = ?"
-            " AND fe.version_id NOT IN (SELECT version_id FROM edges WHERE method = 'wrapper'"
-            "   AND role = 'generated' AND run_id != ?)"
+            " AND fe.version_id NOT IN (SELECT version_id FROM edges WHERE role = 'generated'"
+            "   AND method IN ('wrapper', 'argpath', 'readset') AND run_id != ?)"
             " ORDER BY fe.ts, fe.event_id",
             (host, start, end, len(under), under, run_id),
         ).fetchall()
-        latest = {art: v for art, v in rows}  # the last version seen per artefact
-        for v in latest.values():
-            _add(conn, stats, run_id, v, "generated", "window", confidence)
+        # A background job that held a file open for writing owns all its changes.
+        held = set()
+        for (payload,) in conn.execute(
+            "SELECT e.payload FROM runs r JOIN events e ON e.id = r.id"
+            " WHERE r.host = ? AND r.id != ? AND e.type = 'run_start' AND r.ts_start <= ?"
+            " AND COALESCE(r.ts_end, ?) >= ?",
+            (host, run_id, end, end, start),
+        ):
+            held |= set((json.loads(payload).get("wrapper") or {}).get("written", []))
+        latest = {art: (v, path) for art, v, path in rows}  # last version per artefact
+        for v, path in latest.values():
+            if path not in held:
+                _add(conn, stats, run_id, v, "generated", "window", confidence)
 
     # 4. readset
     if reader is not None:

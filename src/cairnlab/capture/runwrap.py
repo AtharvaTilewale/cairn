@@ -65,8 +65,15 @@ def shell_argv(argv: list[str]) -> list[str]:
     return ["bash", "-c", argv[0]] if len(argv) == 1 else argv
 
 
-def record_outputs(ctx: WrapContext, before: State, ts: str) -> dict[str, list[str]]:
-    """Fingerprint what changed since ``before``; write file events; return the lists."""
+def record_outputs(
+    ctx: WrapContext, before: State, ts: str, since: str | None = None
+) -> dict[str, list[str]]:
+    """Fingerprint what changed since ``before``; write file events; return the lists.
+
+    Each change is dated by the file's mtime when that falls inside the run
+    (``[since, ts]``), so a file written early in a long job is not dated at its end
+    (and into another command's window); otherwise it is dated ``ts``.
+    """
     after = tree_state(ctx)
     changed = sorted(p for p, sig in after.items() if before.get(p) != sig)
     deleted = sorted(p for p in before if p not in after)
@@ -78,16 +85,17 @@ def record_outputs(ctx: WrapContext, before: State, ts: str) -> dict[str, list[s
         except OSError:
             continue  # vanished between the snapshot and the hash
         generated.append(path)
+        mtime = format_ts(datetime.fromtimestamp(fp.mtime_ns / 1e9, UTC))
         writer.write(
             {
                 "path": path,
                 "op": "modified" if path in before else "created",
                 "sha256": fp.sha256,
                 "size": fp.size,
-                "mtime": format_ts(datetime.fromtimestamp(fp.mtime_ns / 1e9, UTC)),
+                "mtime": mtime,
                 "fp": fp.method,
                 "stored": fp.stored,
-                "ts": ts,
+                "ts": mtime if since is not None and since <= mtime <= ts else ts,
             }
         )
     for path in deleted:
@@ -119,7 +127,7 @@ def run_wrapped(ctx: WrapContext, argv: list[str], cwd: Path) -> int:
     except FileNotFoundError:
         rc = 127
     ts_end = utc_now()
-    outputs = record_outputs(ctx, before, ts_end)
+    outputs = record_outputs(ctx, before, ts_end, since=ts_start)
     ctx.writer().write(
         {
             "type": "cmd",

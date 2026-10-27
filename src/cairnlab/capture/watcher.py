@@ -55,6 +55,7 @@ CLOSED_S = 0.1  # after IN_CLOSE_WRITE the writer is done; just absorb trailing 
 SETTLE_S = 30.0
 CPT_QUIET_S = 20 * 60.0
 RECHECK_S = 5.0
+MTIME_TRUST_S = 5.0  # an mtime this close before the event is the real write time
 
 
 class IgnoreRules:
@@ -299,12 +300,25 @@ class FileTracker:
             "mtime": format_ts(datetime.fromtimestamp(fp.mtime_ns / 1e9, UTC)),
             "fp": fp.method,
             "stored": fp.stored,
-            "ts": observed,
+            "ts": self._change_time(p, fp.mtime_ns / 1e9, observed),
         }
         if p.src:
             event["src_path"] = p.src
         self.writer.write(event)
         return True
+
+    @staticmethod
+    def _change_time(p: _Pending, mtime: float, observed: str) -> str:
+        """When the change happened: the file's mtime if it is fresh, else when we saw it.
+
+        Event delivery can lag the write by a fraction of a second, enough to land in
+        the next command's window. A fresh mtime is the kernel's write time. An mtime
+        much older than the event is a preserved timestamp (cp -p, rsync -a, tar), so
+        the observation time is used instead.
+        """
+        if p.op != "scanned" and p.last - MTIME_TRUST_S <= mtime <= p.last + 0.5:
+            return format_ts(datetime.fromtimestamp(mtime, UTC))
+        return observed
 
     def save_state(self) -> None:
         """Persist what has been fingerprinted, so a restart does not re-hash everything."""

@@ -130,7 +130,13 @@ def test_background_run(ctx):
     root = ctx.roots[0]
     run_id, log = start_background(
         ctx,
-        [PY, "-c", "import time; time.sleep(0.5); open('bg.csv','w').write('x'); print('done')"],
+        # Holds its output open while working, as mdrun does with md.log.
+        [
+            PY,
+            "-c",
+            "import time; f = open('bg.csv', 'w'); f.write('x'); f.flush();"
+            " time.sleep(0.6); f.close(); print('done')",
+        ],
         cwd=root,
     )
     assert wait_for(lambda: any(e["type"] == "run_start" for e in events(ctx.home)))
@@ -144,6 +150,8 @@ def test_background_run(ctx):
     assert row["status"] == "done" and row["exit"] == 0 and "time.sleep" in row["cmd"]
     assert ("generated", "bg.csv", "wrapper", 1.0) in edge_rows(conn)
     assert "done" in Path(log).read_text()
+    end = [e for e in events(ctx.home) if e["type"] == "run_end"][0]
+    assert any(p.endswith("/bg.csv") for p in end["wrapper"]["written"])
 
 
 def test_lost_background_run(ctx):

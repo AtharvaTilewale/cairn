@@ -3,16 +3,20 @@
 The CLI starts a monitor (``python -m cairnlab.capture.longrun <spec>``) in its own
 session with stdout/stderr going to ``.cairn/logs/<run_id>.log``, and returns at once.
 The monitor snapshots the project, starts the command, writes ``run_start`` (with
-both PIDs), waits, records the exact outputs like ``cairn run``, and writes
-``run_end``. If the machine reboots mid-run, ingest finds a ``run_start`` whose
+both PIDs), waits while polling which files the job holds open for writing, records
+the outputs like ``cairn run`` (``wrapper.written`` lists the files seen open), and
+writes ``run_end``. If the machine reboots mid-run, ingest finds a ``run_start`` whose
 monitor is gone and marks the run ``lost``.
 """
 
+import contextlib
 import json
 import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 from ulid import ULID
@@ -27,6 +31,79 @@ from cairnlab.capture.runwrap import (
 )
 from cairnlab.config import state_dir
 from cairnlab.store.models import utc_now
+
+
+def _children(pid: int) -> set[int]:
+    """``pid`` and all its descendants, from /proc/*/stat parent links."""
+    parent: dict[int, int] = {}
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            stat = (d / "stat").read_text()
+            # Fields after the ")" closing the command name: state, ppid, ...
+            ppid = int(stat[stat.rindex(")") + 2 :].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        parent[int(d.name)] = ppid
+    tree, frontier = {pid}, [pid]
+    while frontier:
+        p = frontier.pop()
+        kids = [c for c, pp in parent.items() if pp == p and c not in tree]
+        tree.update(kids)
+        frontier += kids
+    return tree
+
+
+def files_open_for_write(pids: set[int]) -> set[str]:
+    """Regular files that any of ``pids`` holds open for writing (Linux /proc)."""
+    found = set()
+    for pid in pids:
+        fd_dir = Path(f"/proc/{pid}/fd")
+        try:
+            fds = list(fd_dir.iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(fd)
+                info = (Path(f"/proc/{pid}/fdinfo") / fd.name).read_text()
+            except OSError:
+                continue
+            if not target.startswith("/") or target.startswith(("/dev/", "/proc/")):
+                continue
+            flags = next(
+                (ln.split()[1] for ln in info.splitlines() if ln.startswith("flags:")), "0"
+            )
+            if int(flags, 8) & 0o3:  # O_WRONLY or O_RDWR
+                found.add(target.removesuffix(" (deleted)"))
+    return found
+
+
+class WriteTracker(threading.Thread):
+    """Polls which files the job's process tree has open for writing.
+
+    Long-running tools (mdrun) hold their outputs open for the whole run, so this
+    attributes them to the job even when other commands write in the same directory.
+    Polls every 0.1 s for the first 10 s, then every 2 s.
+    """
+
+    def __init__(self, pid: int):
+        super().__init__(daemon=True)
+        self.pid = pid
+        self.seen: set[str] = set()
+        self._stop_event = threading.Event()
+
+    def run(self) -> None:
+        t0 = time.monotonic()
+        while not self._stop_event.is_set():
+            with contextlib.suppress(OSError):
+                self.seen |= files_open_for_write(_children(self.pid))
+            self._stop_event.wait(0.1 if time.monotonic() - t0 < 10 else 2.0)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self.join(timeout=5)
 
 
 def log_path(home: Path, run_id: str) -> Path:
@@ -118,9 +195,15 @@ def _monitor(spec_path: Path) -> int:
             **spec.get("env", {}),
         }
     )
+    tracker = WriteTracker(child.pid) if child else None
+    if tracker:
+        tracker.start()
     rc = child.wait() if child else 127
     ts_end = utc_now()
-    outputs = record_outputs(ctx, before, ts_end)
+    outputs = record_outputs(ctx, before, ts_end, since=ts_start)
+    if tracker:
+        tracker.stop()
+        outputs["written"] = sorted(tracker.seen)
     writer.write(
         {
             "type": "run_end",
