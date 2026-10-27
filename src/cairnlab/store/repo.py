@@ -18,6 +18,7 @@ class HostSummary:
 def count(conn: sqlite3.Connection, table: str) -> int:
     """Number of rows in ``table`` (one of the known Cairn tables)."""
     known = {"events", "runs", "artifacts", "artifact_versions", "edges", "notes", "file_events"}
+    known |= {"readsets"}
     if table not in known:
         raise ValueError(f"unknown table {table!r}")
     return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

@@ -127,6 +127,7 @@ class IngestStats:
     lines: int = 0
     runs: int = 0  # cmd events stored
     files_seen: int = 0  # file events stored
+    earliest: str | None = None  # earliest time any newly stored event touches
     duplicates: int = 0
     malformed: int = 0
     unsupported: int = 0
@@ -218,14 +219,21 @@ def _ingest_line(
         run_id = _store_cmd(conn, event)
         if run_id:
             stats.runs += 1
+            _touch(stats, event.ts_start)
             if snapshots:
                 snapshots.apply(conn, run_id, event)
         else:
             stats.duplicates += 1
     elif _store_file(conn, event, objects_dir):
         stats.files_seen += 1
+        _touch(stats, event.ts)
     else:
         stats.duplicates += 1
+
+
+def _touch(stats: IngestStats, ts: str) -> None:
+    if stats.earliest is None or ts < stats.earliest:
+        stats.earliest = ts
 
 
 def _insert_event(conn: sqlite3.Connection, kind: str, ts: str, host: str, obj: dict) -> str | None:

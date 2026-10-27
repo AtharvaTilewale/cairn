@@ -1,4 +1,4 @@
-"""synthlab end to end: real watcher, real hook, ingest, metrics (about 20 s)."""
+"""synthlab end to end: real watcher, real hook, ingest, linking, metrics (about 20 s)."""
 
 import shutil
 
@@ -23,3 +23,5 @@ def test_synthlab_capture_is_complete(tmp_path):
     assert m["ok"], m
     assert m["run_recall"] == 1.0 and m["run_precision"] == 1.0
     assert m["fit_json_versions"] == 3 and m["params_versions"] == 3
+    # Linking (argpath + window): 1.0 / 1.0 today; allow a little timing slack.
+    assert m["edge_precision"] >= 0.95 and m["edge_recall"] >= 0.95, m

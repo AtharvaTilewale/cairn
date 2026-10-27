@@ -1,8 +1,8 @@
 """Compute the evaluation metrics for a synthlab project against its answer key.
 
-v0 measures capture only: run recall/precision, exit codes, seeded faults, file
-versions and ignore rules. Edge precision/recall, drift, note placement, entry
-faithfulness and reproduce success are added as those features land.
+Capture: run recall/precision, exit codes, seeded faults, file versions, ignore rules.
+Provenance: edge precision/recall (overall, per role, per method). Drift, note
+placement, entry faithfulness and reproduce success are added as those features land.
 """
 
 import json
@@ -64,6 +64,8 @@ def compute(project: Path) -> dict:
         "SELECT SUM(stored), COUNT(*) FROM artifact_versions WHERE fp = 'full'"
     ).fetchone()
 
+    edge_m = _edge_metrics(conn, pairs, root)
+
     m = {
         "runs_expected": len(expected),
         "runs_recorded": len(runs),
@@ -79,6 +81,7 @@ def compute(project: Path) -> dict:
         "fit_json_versions": rel.get("results/fit.json", 0),
         "small_versions_stored": f"{stored[0] or 0}/{stored[1]}",
         "missing_runs": [s["cmd"] for s in expected if s not in [p for p, _ in pairs]],
+        **edge_m,
     }
     m["ok"] = (
         m["run_recall"] == 1.0
@@ -91,6 +94,44 @@ def compute(project: Path) -> dict:
         and not ignored_leaks
     )
     return m
+
+
+def _pr(pred: set, truth: set) -> tuple[float, float]:
+    hit = len(pred & truth)
+    precision = hit / len(pred) if pred else 1.0
+    recall = hit / len(truth) if truth else 1.0
+    return round(precision, 3), round(recall, 3)
+
+
+def _edge_metrics(conn: sqlite3.Connection, pairs: list, root: str) -> dict:
+    """Edge precision/recall over the runs matched to answer-key steps."""
+    truth: set[tuple[int, str, str]] = set()
+    pred: set[tuple[int, str, str]] = set()
+    by_method: dict[str, set] = {}
+    for step, run in pairs:
+        truth |= {(step["i"], "used", u) for u in step["used"]}
+        truth |= {(step["i"], "generated", g) for g in step["generated"]}
+        rows = conn.execute(
+            "SELECT e.role, a.path, e.method FROM edges e"
+            " JOIN artifact_versions v ON v.id = e.version_id"
+            " JOIN artifacts a ON a.id = v.artifact_id WHERE e.run_id = ?",
+            (run["id"],),
+        )
+        for role, path, method in rows:
+            edge = (step["i"], role, path.removeprefix(root + "/"))
+            pred.add(edge)
+            by_method.setdefault(method, set()).add(edge)
+    precision, recall = _pr(pred, truth)
+    out = {"edge_precision": precision, "edge_recall": recall}
+    for role in ("used", "generated"):
+        p, r = _pr({e for e in pred if e[1] == role}, {e for e in truth if e[1] == role})
+        out[f"{role}_precision_recall"] = f"{p} / {r}"
+    out["edges_by_method"] = {
+        m: f"{len(es)} (precision {_pr(es, truth)[0]})" for m, es in sorted(by_method.items())
+    }
+    out["edge_false_positives"] = sorted(pred - truth)[:10]
+    out["edge_false_negatives"] = sorted(truth - pred)[:10]
+    return out
 
 
 def render(m: dict) -> str:

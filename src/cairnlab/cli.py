@@ -24,8 +24,10 @@ from cairnlab.capture.ingest import Snapshots
 from cairnlab.capture.ingest import ingest as ingest_events
 from cairnlab.capture.watcher import EventWriter, FileTracker, IgnoreRules
 from cairnlab.capture.watcher import watch as watch_files
+from cairnlab.provenance.linker import GRACE
+from cairnlab.provenance.linker import link as link_runs
 from cairnlab.store import db, repo
-from cairnlab.store.models import normalize_ts, utc_now
+from cairnlab.store.models import format_ts, normalize_ts, utc_now
 
 app = typer.Typer(
     help="Cairn: the lab notebook that writes itself.",
@@ -120,7 +122,7 @@ def status() -> None:
     out.print(
         f"Files: {repo.count(conn, 'artifacts')} artefacts,"
         f" {repo.count(conn, 'artifact_versions')} versions,"
-        f" {repo.count(conn, 'file_events')} changes"
+        f" {repo.count(conn, 'file_events')} changes, {repo.count(conn, 'edges')} edges"
     )
 
     hosts = repo.hosts(conn)
@@ -187,6 +189,10 @@ def ingest() -> None:
     db.migrate(conn)
     snapshots = Snapshots(host=config.local_host(), git=GitSnapshotter(), env=EnvSnapshotter())
     stats = ingest_events(conn, config.events_dir(home), config.objects_dir(home), snapshots)
+    linked = None
+    if stats.earliest is not None:
+        # New events can change the edges of any run whose window reaches them.
+        linked = link_runs(conn, since=_minus_grace(stats.earliest))
     conn.close()
     out.print(
         f"Ingested {stats.runs} new runs and {stats.files_seen} file events"
@@ -195,6 +201,29 @@ def ingest() -> None:
         f" {stats.unsupported} unsupported).",
         soft_wrap=True,
     )
+    if linked:
+        out.print(f"Linked {linked.runs} runs: {_edge_summary(linked.edges)}.", soft_wrap=True)
+
+
+def _minus_grace(ts: str) -> str:
+    return format_ts(datetime.fromisoformat(ts) - GRACE)
+
+
+def _edge_summary(edges: dict[str, int]) -> str:
+    if not edges:
+        return "no edges"
+    return ", ".join(f"{n} {method}" for method, n in sorted(edges.items()))
+
+
+@app.command()
+def link() -> None:
+    """Recompute provenance edges for every run (after a linker change)."""
+    home = _require_home()
+    conn = db.connect(config.db_path(home))
+    db.migrate(conn)
+    stats = link_runs(conn)
+    conn.close()
+    out.print(f"Linked {stats.runs} runs: {_edge_summary(stats.edges)}.", soft_wrap=True)
     if stats.malformed:
         err.print("Malformed lines were skipped; run with --verbose for details.")
 
