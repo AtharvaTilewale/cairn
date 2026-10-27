@@ -193,15 +193,18 @@ def ingest(
     ctx = _Pass(conn, stats, objects_dir, snapshots)
     if events_dir.is_dir():
         offsets = repo.ingest_offsets(conn)
-        for path in sorted(events_dir.glob("*.jsonl")):
-            _ingest_file(ctx, path, offsets.get(path.name, 0))
+        # Recursive: synced spokes live in events/remote/<alias>/. Offsets are keyed by
+        # the path relative to events_dir (a bare name for the hub's own files).
+        for path in sorted(events_dir.rglob("*.jsonl")):
+            key = path.relative_to(events_dir).as_posix()
+            _ingest_file(ctx, path, key, offsets.get(key, 0))
     if lost_check_host:
         stats.lost = _mark_lost(conn, lost_check_host)
     _attach_notes(conn)
     return stats
 
 
-def _ingest_file(ctx: _Pass, path: Path, offset: int) -> None:
+def _ingest_file(ctx: _Pass, path: Path, key: str, offset: int) -> None:
     size = path.stat().st_size
     if size < offset:
         log.warning("%s shrank (%d < %d bytes); re-reading from the start", path.name, size, offset)
@@ -218,9 +221,9 @@ def _ingest_file(ctx: _Pass, path: Path, offset: int) -> None:
     with db.transaction(ctx.conn):
         pos = offset
         for n, raw in enumerate(data[: end + 1].splitlines(keepends=True), start=1):
-            _ingest_line(ctx, raw, f"{path.name} line {n} of new data (byte {pos})")
+            _ingest_line(ctx, raw, f"{key} line {n} of new data (byte {pos})")
             pos += len(raw)
-        repo.set_ingest_offset(ctx.conn, path.name, offset + end + 1, utc_now())
+        repo.set_ingest_offset(ctx.conn, key, offset + end + 1, utc_now())
 
 
 def _ingest_line(ctx: _Pass, raw: bytes, where: str) -> None:

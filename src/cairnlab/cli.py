@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import signal
 import sys
 import threading
@@ -25,6 +26,8 @@ from cairnlab.capture.ingest import Snapshots
 from cairnlab.capture.ingest import ingest as ingest_events
 from cairnlab.capture.longrun import start_background
 from cairnlab.capture.runwrap import WrapContext, run_wrapped
+from cairnlab.capture.sync import SyncError, hosts_file, load_hosts
+from cairnlab.capture.sync import sync as sync_spoke
 from cairnlab.capture.watcher import EventWriter, FileTracker, rules_for
 from cairnlab.capture.watcher import watch as watch_files
 from cairnlab.llm.client import Client, LLMError
@@ -166,8 +169,9 @@ def status() -> None:
     events = config.events_dir(home)
     pending = 0
     if events.is_dir():
-        for f in events.glob("*.jsonl"):
-            pending += max(0, f.stat().st_size - offsets.get(f.name, 0))
+        for f in events.rglob("*.jsonl"):
+            key = f.relative_to(events).as_posix()
+            pending += max(0, f.stat().st_size - offsets.get(key, 0))
     if pending:
         out.print(f"Not yet ingested: {pending} bytes of JSONL (run [bold]cairn ingest[/bold])")
     conn.close()
@@ -366,9 +370,41 @@ def scan(
 
 
 @app.command()
-def sync(aliases: Annotated[list[str] | None, typer.Argument(help="Host aliases.")] = None) -> None:
-    """Pull spoke JSONL over SSH, scan the cluster, reconcile SGE jobs, ingest."""
-    _todo("sync")
+def sync(
+    aliases: Annotated[list[str] | None, typer.Argument(help="Host aliases to pull.")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the commands only.")] = False,
+) -> None:
+    """Pull spoke machines' events, objects and logs over SSH, then ingest. Never pushes."""
+    hosts = load_hosts()
+    if not aliases:
+        out.print(f"Hosts file: {hosts_file()}")
+        if not hosts:
+            out.print(
+                '  none yet; add e.g.\n  [workstation]\n  ssh = "labuser"\n'
+                '  home = "~/.cairn-alice"',
+                markup=False,
+            )
+        for h in hosts.values():
+            out.print(f"  {h.alias}: {h.ssh or '(local)'}:{h.home}", markup=False)
+        return
+    unknown = [a for a in aliases if a not in hosts]
+    if unknown:
+        err.print(f"[red]Unknown host(s):[/red] {', '.join(unknown)} (see {hosts_file()})")
+        raise typer.Exit(2)
+    home = _require_home()
+    for alias in aliases:
+        try:
+            cmds = sync_spoke(hosts[alias], home, dry_run=dry_run)
+        except SyncError as exc:
+            err.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from None
+        if dry_run:
+            for c in cmds:
+                out.print(" ".join(shlex.quote(x) for x in c), markup=False, soft_wrap=True)
+        else:
+            err.print(f"Pulled {alias}.")
+    if not dry_run:
+        ingest()
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})

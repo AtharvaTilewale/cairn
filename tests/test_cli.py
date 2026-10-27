@@ -72,7 +72,6 @@ def test_status_on_empty_store(project):
 @pytest.mark.parametrize(
     "args",
     [
-        ["sync", "cluster"],
         ["reproduce", "fig.png", "--yes"],
         ["ask", "what changed?"],
         ["report", "week"],
