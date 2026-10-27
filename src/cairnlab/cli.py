@@ -246,7 +246,7 @@ def ingest() -> None:
     conn.close()
     out.print(
         f"Ingested {stats.runs} new runs and {stats.files_seen} file events"
-        + (f", {stats.notes} notes" if stats.notes else "")
+        + (f", {stats.notes} note{'s' if stats.notes != 1 else ''}" if stats.notes else "")
         + f" from {stats.lines} lines in {stats.files} files"
         f" ({stats.duplicates} duplicates, {stats.malformed} malformed,"
         f" {stats.unsupported} unsupported).",
