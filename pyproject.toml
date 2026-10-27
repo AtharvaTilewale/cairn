@@ -27,6 +27,8 @@ dependencies = [
 [project.optional-dependencies]
 # synthlab drives a fake numpy/matplotlib project; Cairn itself does not need these.
 eval = ["numpy", "matplotlib"]
+# Push-to-talk voice notes (also needs PortAudio: sudo apt install libportaudio2).
+voice = ["sounddevice"]
 dev = ["pytest", "ruff", "numpy", "matplotlib"]
 
 [project.scripts]

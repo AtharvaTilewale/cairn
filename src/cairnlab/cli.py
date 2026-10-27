@@ -5,7 +5,9 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import signal
+import subprocess
 import sys
 import threading
 from datetime import date, datetime, timedelta
@@ -42,6 +44,11 @@ from cairnlab.store.models import format_ts, normalize_ts, utc_now
 from cairnlab.synth.claims import check_faithfulness
 from cairnlab.synth.claims import summarize as summarize_claims
 from cairnlab.synth.entry import save_faithfulness, write_entry
+from cairnlab.voice.record import MAX_SECONDS as VOICE_MAX_SECONDS
+from cairnlab.voice.record import RATE as VOICE_RATE
+from cairnlab.voice.record import Toggle, to_wav
+from cairnlab.voice.record import record as record_audio
+from cairnlab.voice.transcribe import transcribe_wav
 
 app = typer.Typer(
     help="Cairn: the lab notebook that writes itself.",
@@ -450,18 +457,19 @@ def note(
     run_id: Annotated[
         str | None, typer.Option("--run", help="The run it is about (default: the last one).")
     ] = None,
+    voice: Annotated[bool, typer.Option("--voice", help="Record a spoken note.")] = False,
 ) -> None:
-    """Record why: a note pinned to the last command in this terminal (or --run R:<id>)."""
+    """Record why: a note pinned to the last command in this terminal (or --run R:<id>).
+
+    With no text (or --voice), record a spoken note: run it once to start and again to
+    stop (bind it to a keyboard shortcut), or press Enter in a terminal.
+    """
     words = " ".join(text or []).strip()
-    if not words:
-        _todo("note (voice)")
-        return
     home = config.find_home()
     if home is None:
         err.print("[red]No Cairn store:[/red] set CAIRN_HOME or run [bold]cairn init[/bold].")
         raise typer.Exit(1)
     user = _cairn_user()
-    host = config.local_host()
     event = {
         "type": "note",
         "id": str(ULID()),
@@ -472,8 +480,60 @@ def note(
     }
     if run_id:
         event["run"] = run_id if run_id.startswith("R:") else f"R:{run_id}"
-    EventWriter(config.events_dir(home), host, user, suffix="note").write(event)
-    err.print("Noted.")
+    if voice or not words:
+        _voice_note(home, event)
+    _write_note(home, user, event)
+    err.print("Noted." if event["text"] else "Saved the recording.")
+
+
+def _write_note(home: Path, user: str, event: dict) -> None:
+    EventWriter(config.events_dir(home), config.local_host(), user, suffix="note").write(event)
+
+
+def _desktop_notify(message: str) -> None:
+    """A desktop notification, for notes started from a keyboard shortcut."""
+    graphical = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    if graphical and shutil.which("notify-send"):
+        subprocess.run(
+            ["notify-send", "-a", "Cairn", "Cairn", message], check=False, capture_output=True
+        )
+
+
+def _voice_note(home: Path, event: dict) -> None:
+    """Record, save and transcribe; fills ``event`` in place (or exits if only stopping)."""
+    toggle = Toggle(config.state_dir(home) / "voice.pid")
+    if toggle.stop_other():
+        err.print("Stopped the recording.")
+        raise typer.Exit(0)
+    stop = threading.Event()
+    toggle.claim(stop)
+    if sys.stdin.isatty():
+        threading.Thread(target=lambda: (sys.stdin.readline(), stop.set()), daemon=True).start()
+        err.print("Recording... press Enter (or run cairn note again) to stop.")
+    _desktop_notify("Recording a note: press the shortcut again to stop.")
+    try:
+        pcm = record_audio(stop, max_seconds=VOICE_MAX_SECONDS)
+    except RuntimeError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    finally:
+        toggle.release()
+    if len(pcm) < VOICE_RATE * 2 * 0.3:  # under 0.3 s of audio
+        err.print("Too short; nothing saved.")
+        raise typer.Exit(0)
+    audio = Path("notes") / f"{event['id']}.wav"
+    wav = to_wav(pcm)
+    (home / audio).parent.mkdir(parents=True, exist_ok=True)
+    (home / audio).write_bytes(wav)
+    event.update(source="voice", audio=audio.as_posix())
+    try:
+        event["text"] = transcribe_wav(wav, home=home)
+    except LLMError as exc:
+        event["untranscribed"] = True
+        _write_note(home, _cairn_user(), event)
+        err.print(f"[red]Transcription failed:[/red] {exc}. The audio is kept at {home / audio}.")
+        raise typer.Exit(1) from None
+    _desktop_notify(f"Noted: {event['text'] or '(no speech heard)'}")
 
 
 def _parse_day(text: str, tz) -> date:

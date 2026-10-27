@@ -143,6 +143,7 @@ class NoteEvent(BaseModel):
     source: Literal["typed", "voice"] = "typed"
     audio: str | None = None
     run: str | None = None  # explicit "R:<id>" the note is about
+    untranscribed: bool = False  # voice note whose transcription failed (audio kept)
 
 
 class Event(BaseModel):
