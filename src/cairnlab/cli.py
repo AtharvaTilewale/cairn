@@ -52,6 +52,7 @@ from cairnlab.voice.record import RATE as VOICE_RATE
 from cairnlab.voice.record import Toggle, to_wav
 from cairnlab.voice.record import record as record_audio
 from cairnlab.voice.transcribe import transcribe_wav
+from cairnlab.web.export import Exporter
 
 app = typer.Typer(
     help="Cairn: the lab notebook that writes itself.",
@@ -1082,6 +1083,24 @@ def _show_note(conn, key: str, tz) -> bool:
 
 
 @app.command()
+def export(
+    out_dir: Annotated[
+        Path | None, typer.Option("--out", help="Where to write the site (default .cairn/site).")
+    ] = None,
+) -> None:
+    """Write the notebook as a static HTML site: entries, reports, cited runs and files."""
+    home = _require_home()
+    conn = db.connect(config.db_path(home))
+    db.migrate(conn)
+    target = out_dir or home / "site"
+    index = Exporter(
+        conn, config.objects_dir(home), target, config.timezone(home), config.project_root(home)
+    ).export()
+    conn.close()
+    out.print(f"Wrote {index}")
+
+
+@app.command()
 def serve() -> None:
-    """Start the optional web viewer."""
+    """Start the optional web viewer (use cairn export for a static site)."""
     _todo("serve")

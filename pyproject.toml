@@ -22,6 +22,7 @@ dependencies = [
   "pathspec",
   "jinja2",
   "pillow",
+  "markdown",
 ]
 
 [project.optional-dependencies]
