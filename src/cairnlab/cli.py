@@ -206,7 +206,14 @@ def activate() -> None:
     if sys.stdout.isatty():
         err.print('Use this as: [bold]eval "$(cairn activate)"[/bold]')
         raise typer.Exit(1)
-    sys.stdout.write(activation_script(home=config.find_home(), session=str(ULID())))
+    sys.stdout.write(
+        activation_script(
+            home=config.find_home(),
+            session=str(ULID()),
+            user=config.user_default("CAIRN_USER"),
+            host=config.user_default("CAIRN_HOST"),
+        )
+    )
 
 
 @app.command()
@@ -301,9 +308,12 @@ RootOpt = Annotated[
 
 
 def _cairn_user() -> str:
-    user = os.environ.get("CAIRN_USER", "")
+    user = config.user_default("CAIRN_USER") or ""
     if not re.fullmatch(r"[A-Za-z0-9._-]+", user):
-        err.print("[red]Set CAIRN_USER[/red] (letters, digits, '.', '_', '-') first.")
+        err.print(
+            "[red]Set CAIRN_USER[/red] (letters, digits, '.', '_', '-'): export it, or put"
+            f" CAIRN_USER=<you> in {config.user_env_file()}."
+        )
         raise typer.Exit(1)
     return user
 

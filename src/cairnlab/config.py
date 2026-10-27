@@ -41,12 +41,35 @@ def find_home(start: Path | None = None) -> Path | None:
     return None
 
 
-def local_host() -> str:
-    """This machine's host name as stored in events: $CAIRN_HOST, else the short name.
+def user_env_file() -> Path:
+    """Per-user settings shared by every terminal: CAIRN_USER, CAIRN_HOST, MODEL_API_KEY."""
+    return Path.home() / ".config" / "cairn" / "env"
 
-    Matches the bash hook, which uses ``${CAIRN_HOST:-${HOSTNAME%%.*}}``.
+
+def user_default(name: str) -> str | None:
+    """``$name``, else its value in ~/.config/cairn/env (KEY=value lines)."""
+    if os.environ.get(name):
+        return os.environ[name]
+    path = user_env_file()
+    if not path.is_file():
+        return None
+    for line in path.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[7:]
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == name:
+            return value.strip().strip("'\"") or None
+    return None
+
+
+def local_host() -> str:
+    """This machine's host name as stored in events.
+
+    $CAIRN_HOST, else CAIRN_HOST in ~/.config/cairn/env, else the short host name;
+    ``cairn activate`` hands the same default to the bash hook.
     """
-    return os.environ.get("CAIRN_HOST") or socket.gethostname().split(".")[0]
+    return user_default("CAIRN_HOST") or socket.gethostname().split(".")[0]
 
 
 def is_eddie() -> bool:

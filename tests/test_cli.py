@@ -224,3 +224,18 @@ def test_link_command_and_malformed_warning(project):
     linked = runner.invoke(app, ["link"])
     assert linked.exit_code == 0, linked.output
     assert "Linked 0 runs" in linked.output
+
+
+def test_user_defaults_from_env_file(project, isolated_env, monkeypatch):
+    from cairnlab import config
+
+    f = isolated_env / ".config" / "cairn" / "env"
+    f.parent.mkdir(parents=True)
+    f.write_text("MODEL_API_KEY=x\nexport CAIRN_USER=alice\nCAIRN_HOST='hp'\n")
+    assert config.user_default("CAIRN_USER") == "alice"
+    assert config.local_host() == "hp"
+    monkeypatch.setenv("CAIRN_HOST", "other")  # the shell wins over the file
+    assert config.local_host() == "other"
+    runner.invoke(app, ["init"])
+    script = runner.invoke(app, ["activate"]).stdout
+    assert "__cairn_default_user=alice" in script and "__cairn_default_host=other" in script

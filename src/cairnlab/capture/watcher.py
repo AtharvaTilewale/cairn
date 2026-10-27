@@ -266,7 +266,8 @@ class FileTracker:
         try:
             st = path.stat()
         except FileNotFoundError:
-            if key in self.known or p.op != "created":
+            # Only files we have seen: sed -i and editors delete temp files we never knew.
+            if key in self.known:
                 self.known.pop(key, None)
                 self.writer.write({"path": key, "op": "deleted", "ts": observed})
                 return True

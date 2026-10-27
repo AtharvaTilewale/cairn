@@ -333,3 +333,26 @@ def test_preserved_old_mtime_keeps_observed_time(env):
     from datetime import datetime
 
     assert abs(datetime.fromisoformat(ev["ts"]).timestamp() - observed) < 0.01
+
+
+def test_sed_in_place_rename_records_only_the_real_file(env):
+    """sed -i writes a temp file and renames it over the original."""
+    root, events, tracker, clock = env
+    f = root / "params.txt"
+    write(f, "x = 1")
+    tracker.notify(f, "created", closed=True)
+    clock.advance(1)
+    tracker.process_due()
+    tmp = root / "sedR92D9g"
+    write(tmp, "x = 2")
+    tracker.notify(tmp, "created")
+    tmp.rename(f)
+    tracker.notify(tmp, "deleted")
+    tracker.notify(f, "moved", src=tmp)
+    clock.advance(1)
+    tracker.process_due()
+    evs = read_events(events)
+    assert [(Path(e["path"]).name, e["op"]) for e in evs] == [
+        ("params.txt", "created"),
+        ("params.txt", "moved"),
+    ]

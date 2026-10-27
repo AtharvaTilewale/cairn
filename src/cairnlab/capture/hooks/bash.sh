@@ -308,7 +308,8 @@ __cairn_unload() {
     __cairn_activate __cairn_deactivate __cairn_grab_trap __cairn_unload
   unset __cairn_marker __cairn_ignore __cairn_j __cairn_ts __cairn_sec __cairn_ms \
     __cairn_armed __cairn_t0_sec __cairn_t0_ms __cairn_t0_cwd __cairn_t0_cmd __cairn_last_hist \
-    __cairn_last_text __cairn_seq __cairn_host __cairn_p_sec __cairn_p_ms __cairn_p_cwd __cairn_session_id __cairn_default_home \
+    __cairn_last_text __cairn_seq __cairn_host __cairn_p_sec __cairn_p_ms __cairn_p_cwd \
+    __cairn_default_user __cairn_default_host __cairn_session_id __cairn_default_home \
     __cairn_debug_probe
 }
 
@@ -318,8 +319,12 @@ __cairn_grab_trap() {
 }
 
 __cairn_activate() {
+  if [ -z "${CAIRN_USER-}" ] && [ -n "${__cairn_default_user-}" ]; then
+    export CAIRN_USER=$__cairn_default_user
+  fi
   if [ -z "${CAIRN_USER-}" ]; then
-    echo 'cairn: CAIRN_USER is not set; run: export CAIRN_USER=<your name>' >&2
+    echo 'cairn: CAIRN_USER is not set; run: export CAIRN_USER=<your name>' \
+      '(or put CAIRN_USER=<your name> in ~/.config/cairn/env)' >&2
     __cairn_unload
     return 1
   fi
@@ -361,7 +366,7 @@ __cairn_activate() {
   else
     export CAIRN_SESSION="s$(date +%s 2>/dev/null)$$$RANDOM"
   fi
-  __cairn_host=${CAIRN_HOST:-${HOSTNAME%%.*}}
+  __cairn_host=${CAIRN_HOST:-${__cairn_default_host:-${HOSTNAME%%.*}}}
   __cairn_seq=0
   __cairn_armed=
   __cairn_t0_sec=

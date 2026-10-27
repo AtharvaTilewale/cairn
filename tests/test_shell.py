@@ -435,3 +435,12 @@ def test_cairn_run_is_recorded_once_by_the_wrapper(tmp_path):
     # Same terminal session as the hook's events.
     assert wrapped[0]["session"] == hook[0]["session"]
     assert [Path(p).name for p in wrapped[0]["wrapper"]["generated"]] == ["out.csv"]
+
+
+def test_defaults_from_user_env_file(tmp_path):
+    """No exports needed: CAIRN_USER and CAIRN_HOST come from ~/.config/cairn/env."""
+    home = tmp_path / "home"
+    (home / ".config" / "cairn").mkdir(parents=True)
+    (home / ".config" / "cairn" / "env").write_text("CAIRN_USER=fromfile\nCAIRN_HOST=hp\n")
+    s = run_shell(tmp_path, ['eval "$(cairn activate)"', "echo hi"], env={"CAIRN_HOST": ""})
+    assert [(e["user"], e["host"]) for e in s.events] == [("fromfile", "hp")]

@@ -10,7 +10,9 @@ def hook_path() -> Path:
     return Path(str(resources.files(__name__).joinpath("bash.sh")))
 
 
-def activation_script(home: Path | None, session: str) -> str:
+def activation_script(
+    home: Path | None, session: str, user: str | None = None, host: str | None = None
+) -> str:
     """Bash code for ``eval "$(cairn activate)"``.
 
     ``home`` is the store to write events to when ``CAIRN_HOME`` is unset in the shell;
@@ -20,6 +22,11 @@ def activation_script(home: Path | None, session: str) -> str:
     lines = [f"__cairn_session_id={shlex.quote(session)}"]
     if home is not None:
         lines.append(f"__cairn_default_home={shlex.quote(str(home))}")
+    # Defaults from ~/.config/cairn/env, used only when the shell has not set them.
+    if user:
+        lines.append(f"__cairn_default_user={shlex.quote(user)}")
+    if host:
+        lines.append(f"__cairn_default_host={shlex.quote(host)}")
     lines.append(hook_path().read_text(encoding="utf-8"))
     # Must run at top level: inside a function bash hides the current DEBUG trap.
     lines.append("__cairn_debug_probe=$(trap -p DEBUG)")
