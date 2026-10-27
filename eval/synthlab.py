@@ -255,11 +255,42 @@ REPRODUCE_TARGETS = ["figs/fit2.png", "results/summary.txt", "sim.log", "results
 IGNORED_PATHS = ["scratch.tmp", "__pycache__/junk.pyc"]
 
 
-def answer_key() -> dict:
-    """The ground truth for STEPS, independent of what Cairn captured."""
+@dataclass
+class Scenario:
+    """A scripted project: its files, the steps typed, and what must (not) be captured."""
+
+    name: str
+    files: dict[str, str]
+    steps: list[Step]
+    param_file: str
+    must_not_appear: list[str]
+    ignored_paths: list[str]
+    reproduce_targets: list[str]
+
+
+SYNTHLAB = Scenario(
+    name="synthlab",
+    files={
+        "gen.py": GEN_PY,
+        "fit.py": FIT_PY,
+        "plot.py": PLOT_PY,
+        "summarize.py": SUMMARIZE_PY,
+        "simulate.py": SIMULATE_PY,
+        "params.txt": PARAMS,
+    },
+    steps=STEPS,
+    param_file="params.txt",
+    must_not_appear=MUST_NOT_APPEAR,
+    ignored_paths=IGNORED_PATHS,
+    reproduce_targets=REPRODUCE_TARGETS,
+)
+
+
+def answer_key(scenario: Scenario = SYNTHLAB) -> dict:
+    """The ground truth for the scenario's steps, independent of what Cairn captured."""
     steps, notes, params = [], [], []
     last_recorded = None
-    for i, s in enumerate(STEPS):
+    for i, s in enumerate(scenario.steps):
         d = asdict(s)
         d["i"] = i
         d["cmd"] = s.cmd or s.line
@@ -268,17 +299,20 @@ def answer_key() -> dict:
             notes.append({"step": i, "text": s.note, "explains_step": last_recorded})
         if s.param:
             key, old, new = s.param
-            params.append({"step": i, "file": "params.txt", "key": key, "old": old, "new": new})
+            params.append(
+                {"step": i, "file": scenario.param_file, "key": key, "old": old, "new": new}
+            )
         if s.record:
             last_recorded = i
     return {
         "version": 0,
+        "scenario": scenario.name,
         "steps": steps,
         "notes": notes,
         "param_changes": params,
-        "must_not_appear": MUST_NOT_APPEAR,
-        "reproduce_targets": REPRODUCE_TARGETS,
-        "ignored_paths": IGNORED_PATHS,
+        "must_not_appear": scenario.must_not_appear,
+        "reproduce_targets": scenario.reproduce_targets,
+        "ignored_paths": scenario.ignored_paths,
     }
 
 
@@ -315,15 +349,12 @@ def _env(home: Path, readset: bool = False) -> dict[str, str]:
     return env
 
 
-def build(project: Path) -> None:
-    """Write the fake project's scripts and parameter file, and initialise Cairn."""
+def build(project: Path, scenario: Scenario = SYNTHLAB) -> None:
+    """Write the scenario's scripts and parameter files."""
     project.mkdir(parents=True, exist_ok=True)
-    (project / "gen.py").write_text(GEN_PY)
-    (project / "fit.py").write_text(FIT_PY)
-    (project / "plot.py").write_text(PLOT_PY)
-    (project / "summarize.py").write_text(SUMMARIZE_PY)
-    (project / "simulate.py").write_text(SIMULATE_PY)
-    (project / "params.txt").write_text(PARAMS)
+    for name, text in scenario.files.items():
+        (project / name).parent.mkdir(parents=True, exist_ok=True)
+        (project / name).write_text(text)
 
 
 def play(
@@ -333,6 +364,7 @@ def play(
     readset: bool = False,
     entry: bool = False,
     reproduce: bool = False,
+    scenario: Scenario = SYNTHLAB,
 ) -> dict:
     """Run every step through the real hook with ``cairn watch`` running; then ingest.
 
@@ -364,7 +396,7 @@ def play(
             text=True,
         )
         assert shell.stdin is not None
-        for line in ['eval "$(cairn activate)"', *(s.line for s in STEPS), "exit"]:
+        for line in ['eval "$(cairn activate)"', *(s.line for s in scenario.steps), "exit"]:
             shell.stdin.write(line + "\n")
             shell.stdin.flush()
             time.sleep(step_delay)
@@ -378,7 +410,7 @@ def play(
     ingest = subprocess.run(
         ["cairn", "ingest"], cwd=project, env=env, capture_output=True, text=True, check=True
     )
-    key = answer_key()
+    key = answer_key(scenario)
     (project / "answer_key.json").write_text(json.dumps(key, indent=1))
     info = {"shell_stderr": stderr, "ingest": ingest.stdout.strip()}
     if entry:
@@ -393,7 +425,7 @@ def play(
         info["entry"] = (res.stdout + res.stderr).strip()
     if reproduce:
         verdicts = {}
-        for target in REPRODUCE_TARGETS:
+        for target in scenario.reproduce_targets:
             res = subprocess.run(
                 ["cairn", "reproduce", target, "--yes"],
                 cwd=project,
@@ -437,15 +469,33 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also ask the reproduce agent to regenerate and verify key outputs (~$0.15).",
     )
+    ap.add_argument(
+        "--scenario",
+        choices=["synthlab", "heldout"],
+        default="synthlab",
+        help="heldout: the second scenario; prompts are never tuned on it.",
+    )
     args = ap.parse_args(argv)
+    if args.scenario == "heldout":
+        from eval.heldout.scenario import HELDOUT as scenario
+    else:
+        scenario = SYNTHLAB
     t0 = time.perf_counter()
     base = args.keep or Path(tempfile.mkdtemp(prefix="synthlab-"))
     if args.keep and base.exists():
         shutil.rmtree(base)
     project, home = base / "proj", base / "home"
-    build(project)
-    info = play(project, home, readset=args.readset, entry=args.entry, reproduce=args.reproduce)
+    build(project, scenario)
+    info = play(
+        project,
+        home,
+        readset=args.readset,
+        entry=args.entry,
+        reproduce=args.reproduce,
+        scenario=scenario,
+    )
     metrics = compute(project)
+    metrics["scenario"] = scenario.name
     metrics["readset"] = args.readset
     if args.readset or args.entry:
         metrics["model_cost_usd"] = _cost(project)
