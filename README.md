@@ -7,7 +7,8 @@ turn a day of raw events into a dated, provenance-linked notebook entry.
 Built for the Meta Global AI Developer Hackathon (Indie track, "Build for Your World").
 
 > Status: capture, snapshots, provenance, `cairn run`, notes (typed and voice), trace,
-> multi-machine sync, daily entries, the reproduce agent and the weekly report work.
+> multi-machine sync, daily entries, ask, the reproduce agent, the weekly report and
+> private mode (Muse Glimmer) work; Glimmer has not yet been run on real weights.
 
 ## Install
 
@@ -157,6 +158,61 @@ with your permissions. Paths into the project are redirected to the scratch copy
 your real files are not overwritten, but treat `cairn reproduce` like re-running the
 command yourself.
 
+## Ask
+
+```bash
+cairn ask "When did I switch to the poly model, and what did the first poly fit give?"
+cairn ask "Which runs failed yesterday and why?"
+```
+
+Muse Spark searches your runs, files, notes and entries with tools and answers with
+citations; any cited ID that is not in the store is removed.
+
+## Private mode: Muse Glimmer on your own hardware
+
+Everything that calls Muse Spark can instead use **Muse Glimmer**, Meta's open-weight
+model, on a machine you control, so nothing leaves it:
+
+```bash
+cairn entry yesterday --backend glimmer
+cairn entry --queue --backend glimmer     # every recent day with runs but no entry
+```
+
+Glimmer runs behind any OpenAI-compatible server (llama.cpp, Ollama, vLLM, Modal).
+Cairn follows the model card: temperature 1.0 / top-p 0.95 / top-k 64, and
+`reasoning_strength` for effort. On the workstation (shared account: everything stays
+inside `~/.cairn-alice`, including the Hugging Face cache):
+
+```bash
+cd ~/.cairn-alice
+git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp   # needs build >= b10353
+cmake -B build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=ON
+cmake --build build --config Release -j --target llama-server
+export HF_HOME=~/.cairn-alice/hf
+~/.cairn-alice/venv/bin/pip install huggingface_hub
+~/.cairn-alice/venv/bin/hf download meta-models/Muse-Glimmer-30B-GGUF \
+    --local-dir ~/.cairn-alice/models/glimmer \
+    --include "Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf" \
+    --include "mmproj-Muse-Glimmer-30B-Q4_K_M.gguf"          # ~18 GB
+./build/bin/llama-server \
+    -m ~/.cairn-alice/models/glimmer/Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf \
+    --mmproj ~/.cairn-alice/models/glimmer/mmproj-Muse-Glimmer-30B-Q4_K_M.gguf \
+    -a muse-glimmer -ngl 12 -t 16 -c 131072 -np 1 \
+    --host 127.0.0.1 --port 8080 --jinja --temp 1.0 --top-p 0.95 --top-k 64
+```
+
+The 8 GB GPU has 8 GB, so `-ngl` offloads only some layers (raise it until
+`nvidia-smi` shows ~7 GB used); the rest runs from RAM on 16 threads. Keep `-np 1`:
+llama-server splits `-c` across slots, and a starved slot returns nothing. From the
+hub, reach it through SSH and point Cairn at it:
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 labuser &
+export CAIRN_GLIMMER_BASE_URL=http://127.0.0.1:8080/v1
+cairn entry yesterday --backend glimmer --no-check
+cairn status                 # "Model usage" shows Glimmer's measured tokens/s
+```
+
 ## Weekly report
 
 ```bash
@@ -174,11 +230,15 @@ python -m eval.synthlab              # scripted fake project + answer key; print
 python -m eval.synthlab --readset    # also lets linking call Muse Spark (about $0.01)
 python -m eval.synthlab --readset --entry   # and writes + checks the entry (about $0.09)
 python -m eval.synthlab --readset --reproduce   # and reproduces 4 outputs (about $0.15)
+python -m eval.synthlab --scenario heldout      # the held-out scenario (never tuned on)
 ```
 
 Commands starting with a space are not recorded when `HISTCONTROL` includes
 `ignorespace` (Ubuntu's default). Commands that look like they carry secrets
 (`*KEY*=`, `*TOKEN*`, `*PASSWORD*`, `*SECRET*`) are stored as `[redacted]`.
+
+Results so far (synthetic data only): see `eval/heldout/RESULTS.md` for the held-out
+scenario, recorded from its first blind run.
 
 ## License
 
