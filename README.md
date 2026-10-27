@@ -7,8 +7,7 @@ turn a day of raw events into a dated, provenance-linked notebook entry.
 Built for the Meta Global AI Developer Hackathon (Indie track, "Build for Your World").
 
 > Status: capture, snapshots, provenance, `cairn run`, notes (typed and voice), trace,
-> multi-machine sync and daily entries work; the reproduce agent and weekly report are
-> in progress.
+> multi-machine sync, daily entries, the reproduce agent and the weekly report work.
 
 ## Install
 
@@ -136,12 +135,45 @@ is shown. A second pass splits the entry into atomic claims and checks each agai
 the store (exit codes, commands, file names, parameter values, file contents), so each
 entry comes with a faithfulness score. Entries are saved to `.cairn/entries/`.
 
+## Reproduce: can this file be regenerated?
+
+```bash
+cairn reproduce figs/fit2.png        # shows a plan, asks, then re-runs and checks
+cairn reproduce results/summary.txt --yes
+```
+
+Muse Spark reads the trace and the scripts, then proposes which recorded steps to
+re-run (normally just the cheap final one). Nothing runs until you approve the plan.
+Each step is replayed in a fresh scratch directory with the exact input versions
+restored from `.cairn/objects`, and its outputs are compared with the recorded ones:
+`identical`, `pixel_equal` (same image, different metadata), `data_equal`, `close`
+(numbers within `--rel-tol`), or `different`. The verdict comes from those
+comparisons, not from the model. Only recorded commands can be replayed, only runs
+that took under 10 minutes and whose inputs were stored (no MD, no docking), and API
+keys are removed from the environment.
+
+**The scratch directory is not a security sandbox**: replayed commands run as you,
+with your permissions. Paths into the project are redirected to the scratch copy so
+your real files are not overwritten, but treat `cairn reproduce` like re-running the
+command yourself.
+
+## Weekly report
+
+```bash
+cairn report week                    # the last seven days, from the daily entries
+cairn report week --start 2026-10-26
+```
+
+A plain-text update for your supervisor, under 300 words: what moved, what is
+blocked, decisions and why, next week. Saved to `.cairn/reports/`.
+
 ## Evaluation
 
 ```bash
 python -m eval.synthlab              # scripted fake project + answer key; prints metrics
 python -m eval.synthlab --readset    # also lets linking call Muse Spark (about $0.01)
 python -m eval.synthlab --readset --entry   # and writes + checks the entry (about $0.09)
+python -m eval.synthlab --readset --reproduce   # and reproduces 4 outputs (about $0.15)
 ```
 
 Commands starting with a space are not recorded when `HISTCONTROL` includes
