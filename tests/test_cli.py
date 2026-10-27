@@ -177,3 +177,17 @@ def test_watch_refuses_on_eddie(project, monkeypatch):
     result = runner.invoke(app, ["watch"])
     assert result.exit_code == 2
     assert "never runs on the cluster" in result.output
+
+
+def test_readset_setting(project, monkeypatch):
+    from cairnlab import config
+
+    runner.invoke(app, ["init"])
+    home = project / ".cairn"
+    monkeypatch.delenv("CAIRN_READSET")
+    assert config.readset_enabled(home) is True
+    cfg = home / "config.toml"
+    cfg.write_text(cfg.read_text().replace("readset = true", "readset = false"))
+    assert config.readset_enabled(home) is False
+    monkeypatch.setenv("CAIRN_READSET", "1")
+    assert config.readset_enabled(home) is True

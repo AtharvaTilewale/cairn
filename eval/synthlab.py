@@ -99,6 +99,32 @@ ax.legend()
 fig.savefig(a.out, metadata={"Software": None})
 '''
 
+SIMULATE_PY = '''\
+"""A stand-in for mdrun: holds its log open and appends a line per step."""
+import argparse, time
+
+p = argparse.ArgumentParser()
+p.add_argument("--steps", type=int, default=10)
+p.add_argument("--out", required=True)
+a = p.parse_args()
+with open(a.out, "w") as log:
+    for step in range(a.steps):
+        log.write(f"step {step} energy {-1000.0 - step * 0.5:.2f}\\n")
+        log.flush()
+        time.sleep(0.15)
+'''
+
+SUMMARIZE_PY = '''\
+"""Compare the two fits for the report (paths are fixed in the code)."""
+import json
+
+first = json.load(open("results/fit.json"))
+second = json.load(open("results/fit2.json"))
+with open("results/summary.txt", "w") as fh:
+    fh.write(f"fit:  {first['model']} cutoff={first['cutoff']} {first['coef']}\\n")
+    fh.write(f"fit2: {second['model']} cutoff={second['cutoff']} {second['coef']}\\n")
+'''
+
 PARAMS = "model = exp\ncutoff = 1.0\n"
 
 
@@ -197,12 +223,20 @@ STEPS = [
         generated=["figs/wrapped.png"],
         flags={"wrapper": True},
     ),
+    # A long job in the background, still writing its log while the next steps run.
     Step(
-        "cairn run --bg -- python gen.py --n 300 --seed 3 --out data/obs3.csv",
-        cmd="python gen.py --n 300 --seed 3 --out data/obs3.csv",
-        used=["gen.py"],
-        generated=["data/obs3.csv"],
+        "cairn run --bg -- python simulate.py --steps 14 --out sim.log",
+        cmd="python simulate.py --steps 14 --out sim.log",
+        used=["simulate.py"],
+        generated=["sim.log"],
         flags={"wrapper": True},
+    ),
+    # Inputs named only inside the script: argpath sees summarize.py, readset the rest.
+    Step(
+        "python summarize.py",
+        used=["summarize.py", "results/fit.json", "results/fit2.json"],
+        generated=["results/summary.txt"],
+        flags={},
     ),
     Step("sleep 1.2"),
     Step(
@@ -245,9 +279,9 @@ def answer_key() -> dict:
     }
 
 
-def _env(home: Path) -> dict[str, str]:
+def _env(home: Path, readset: bool = False) -> dict[str, str]:
     bin_dir = str(Path(sys.executable).parent)
-    return {
+    env = {
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
         "HOME": str(home),
         "HISTFILE": str(home / ".bash_history"),
@@ -257,7 +291,25 @@ def _env(home: Path) -> dict[str, str]:
         "MPLCONFIGDIR": str(home / "mpl"),
         "CAIRN_USER": "synth",
         "CAIRN_HOST": "synthlab",
+        "CAIRN_READSET": "1" if readset else "0",
     }
+    if readset:
+        # Network settings (proxies, CA bundles) must reach the ingest subprocess.
+        for var, value in os.environ.items():
+            if var.lower().endswith("_proxy") or var in (
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+                "REQUESTS_CA_BUNDLE",
+            ):
+                env[var] = value
+        # Synthetic scripts only: this is the one place eval sends code to Muse Spark.
+        from cairnlab.llm.client import load_env
+
+        load_env()
+        if not os.environ.get("MODEL_API_KEY"):
+            raise SystemExit("--readset needs MODEL_API_KEY (export it or put it in .env)")
+        env["MODEL_API_KEY"] = os.environ["MODEL_API_KEY"]
+    return env
 
 
 def build(project: Path) -> None:
@@ -266,12 +318,17 @@ def build(project: Path) -> None:
     (project / "gen.py").write_text(GEN_PY)
     (project / "fit.py").write_text(FIT_PY)
     (project / "plot.py").write_text(PLOT_PY)
+    (project / "summarize.py").write_text(SUMMARIZE_PY)
+    (project / "simulate.py").write_text(SIMULATE_PY)
     (project / "params.txt").write_text(PARAMS)
 
 
-def play(project: Path, home: Path, step_delay: float = 0.6) -> dict:
-    """Run every step through the real hook with ``cairn watch`` running; then ingest."""
-    env = _env(home)
+def play(project: Path, home: Path, step_delay: float = 0.6, readset: bool = False) -> dict:
+    """Run every step through the real hook with ``cairn watch`` running; then ingest.
+
+    With ``readset``, ingest asks Muse Spark which files each script reads and writes.
+    """
+    env = _env(home, readset)
     home.mkdir(parents=True, exist_ok=True)
     subprocess.run(["cairn", "init"], cwd=project, env=env, check=True, capture_output=True)
     watcher = subprocess.Popen(
@@ -301,7 +358,7 @@ def play(project: Path, home: Path, step_delay: float = 0.6) -> dict:
         shell.stdin.close()
         stderr = shell.stderr.read() if shell.stderr else ""
         shell.wait(timeout=120)
-        time.sleep(1.5)  # let the watcher's debounce settle the last writes
+        time.sleep(2.5)  # let the background job finish and the watcher settle
     finally:
         watcher.send_signal(signal.SIGTERM)
         watcher.wait(timeout=30)
@@ -313,11 +370,23 @@ def play(project: Path, home: Path, step_delay: float = 0.6) -> dict:
     return {"shell_stderr": stderr, "ingest": ingest.stdout.strip()}
 
 
+def _cost(project: Path) -> float:
+    usage = project / ".cairn" / "usage.jsonl"
+    if not usage.is_file():
+        return 0.0
+    return round(sum(json.loads(x)["cost_usd"] for x in usage.read_text().splitlines()), 4)
+
+
 def main(argv: list[str] | None = None) -> int:
     from eval.metrics import compute, render
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--keep", type=Path, help="Build the project here and keep it.")
+    ap.add_argument(
+        "--readset",
+        action="store_true",
+        help="Let linking call Muse Spark on the synthetic scripts (a few cents).",
+    )
     args = ap.parse_args(argv)
     t0 = time.perf_counter()
     base = args.keep or Path(tempfile.mkdtemp(prefix="synthlab-"))
@@ -325,8 +394,11 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(base)
     project, home = base / "proj", base / "home"
     build(project)
-    info = play(project, home)
+    info = play(project, home, readset=args.readset)
     metrics = compute(project)
+    metrics["readset"] = args.readset
+    if args.readset:
+        metrics["model_cost_usd"] = _cost(project)
     metrics["seconds"] = round(time.perf_counter() - t0, 1)
     print(info["ingest"])
     print(render(metrics))

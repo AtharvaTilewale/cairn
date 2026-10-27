@@ -26,8 +26,10 @@ from cairnlab.capture.longrun import start_background
 from cairnlab.capture.runwrap import WrapContext, run_wrapped
 from cairnlab.capture.watcher import EventWriter, FileTracker, rules_for
 from cairnlab.capture.watcher import watch as watch_files
+from cairnlab.llm.client import Client, LLMError
 from cairnlab.provenance.linker import GRACE
 from cairnlab.provenance.linker import link as link_runs
+from cairnlab.provenance.readset import ReadsetReader
 from cairnlab.store import db, repo
 from cairnlab.store.models import format_ts, normalize_ts, utc_now
 
@@ -200,7 +202,7 @@ def ingest() -> None:
     linked = None
     if stats.earliest is not None:
         # New events can change the edges of any run whose window reaches them.
-        linked = link_runs(conn, since=_minus_grace(stats.earliest))
+        linked = link_runs(conn, since=_minus_grace(stats.earliest), reader=_reader(home))
     conn.close()
     out.print(
         f"Ingested {stats.runs} new runs and {stats.files_seen} file events"
@@ -211,6 +213,18 @@ def ingest() -> None:
     )
     if linked:
         out.print(f"Linked {linked.runs} runs: {_edge_summary(linked.edges)}.", soft_wrap=True)
+
+
+def _reader(home: Path) -> ReadsetReader | None:
+    """The readset method for linking, or None when disabled or no API key is set."""
+    if not config.readset_enabled(home):
+        return None
+    try:
+        client = Client(home=home)
+    except LLMError as exc:
+        log.info("readset off: %s", exc)
+        return None
+    return ReadsetReader(client, config.objects_dir(home))
 
 
 def _minus_grace(ts: str) -> str:
@@ -229,7 +243,7 @@ def link() -> None:
     home = _require_home()
     conn = db.connect(config.db_path(home))
     db.migrate(conn)
-    stats = link_runs(conn)
+    stats = link_runs(conn, reader=_reader(home))
     conn.close()
     out.print(f"Linked {stats.runs} runs: {_edge_summary(stats.edges)}.", soft_wrap=True)
     if stats.malformed:

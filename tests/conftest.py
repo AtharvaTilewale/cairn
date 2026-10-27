@@ -1,4 +1,4 @@
-"""Shared fixtures: every test runs with a throwaway HOME and no Cairn env vars."""
+"""Shared fixtures: a throwaway HOME, no Cairn env vars, no API key, readset off."""
 
 import pytest
 
@@ -9,8 +9,10 @@ def isolated_env(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    for var in ("CAIRN_HOME", "CAIRN_USER", "CAIRN_SESSION", "CAIRN_HOST"):
+    for var in ("CAIRN_HOME", "CAIRN_USER", "CAIRN_SESSION", "CAIRN_HOST", "MODEL_API_KEY"):
         monkeypatch.delenv(var, raising=False)
+    # Tests never call a model API.
+    monkeypatch.setenv("CAIRN_READSET", "0")
     return home
 
 

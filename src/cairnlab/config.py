@@ -90,6 +90,14 @@ def load_config(home: Path) -> dict[str, Any]:
         return tomllib.load(fh)
 
 
+def readset_enabled(home: Path) -> bool:
+    """Whether linking may send scripts to Muse Spark (config [link] readset, CAIRN_READSET)."""
+    env = os.environ.get("CAIRN_READSET")
+    if env is not None:
+        return env.strip().lower() not in ("0", "false", "no", "off", "")
+    return bool(load_config(home).get("link", {}).get("readset", True))
+
+
 def default_config(project_name: str, created: str) -> str:
     """Text of a fresh ``config.toml``."""
     name = project_name.replace("\\", "\\\\").replace('"', '\\"')
@@ -101,4 +109,9 @@ created = "{created}"
 
 [llm]
 backend = "spark"  # spark | glimmer
+
+[link]
+# Send each new script version to Muse Spark once to learn which files it reads and
+# writes (cached by hash). Set to false, or CAIRN_READSET=0, to keep scripts local.
+readset = true
 """
