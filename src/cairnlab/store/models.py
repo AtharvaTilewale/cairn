@@ -7,7 +7,7 @@ e.g. ``2026-10-28T09:14:03.120Z``.
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 
 def format_ts(dt: datetime) -> str:
@@ -53,6 +53,38 @@ class CmdEvent(BaseModel):
     ts_start: Timestamp
     ts_end: Timestamp
     exit: int
+    conda_env: str | None = None  # $CONDA_DEFAULT_ENV at the time
+    env_prefix: str | None = None  # $VIRTUAL_ENV, else $CONDA_PREFIX
+
+
+Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class FileEvent(BaseModel):
+    """One settled file change, as written by the watcher or scan (section 5.2)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    v: Literal[1]
+    type: Literal["file"]
+    id: NonEmpty
+    host: NonEmpty
+    user: NonEmpty
+    path: NonEmpty
+    op: Literal["created", "modified", "deleted", "moved", "scanned"]
+    sha256: Sha256 | None = None
+    size: int | None = None
+    mtime: Timestamp | None = None
+    fp: Literal["full", "fast"] | None = None
+    stored: bool = False
+    ts: Timestamp
+    src_path: str | None = None
+
+    @model_validator(mode="after")
+    def _content_unless_deleted(self) -> "FileEvent":
+        if self.op != "deleted" and (self.sha256 is None or self.size is None):
+            raise ValueError(f"a {self.op!r} file event needs sha256 and size")
+        return self
 
 
 class Event(BaseModel):
@@ -81,3 +113,7 @@ class Run(BaseModel):
     git_dirty: int | None = None
     env_hash: str | None = None
     phase: str | None = None
+    user: str | None = None
+    git_branch: str | None = None
+    git_diffstat: str | None = None
+    env_name: str | None = None

@@ -15,6 +15,7 @@ EXPECTED_TABLES = {
     "notes",
     "entries",
     "ingest_state",
+    "file_events",
     "schema_migrations",
 }
 
@@ -27,7 +28,7 @@ def tables(conn: sqlite3.Connection) -> set[str]:
 def test_migrate_creates_all_tables(tmp_path):
     conn = db.connect(tmp_path / "cairn.db")
     applied = db.migrate(conn)
-    assert applied == [1]
+    assert applied == [v for v, _, _ in db.available_migrations()]
     assert tables(conn) >= EXPECTED_TABLES
 
 
@@ -38,7 +39,9 @@ def test_migrate_is_idempotent(tmp_path):
     conn.close()
     conn = db.connect(path)
     assert db.migrate(conn) == []
-    assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == len(
+        db.available_migrations()
+    )
 
 
 def test_wal_and_foreign_keys(tmp_path):
@@ -72,3 +75,24 @@ def test_transaction_rolls_back(tmp_path):
         conn.execute("INSERT INTO ingest_state (file, offset, updated) VALUES ('f', 1, 't')")
         raise RuntimeError("boom")
     assert conn.execute("SELECT COUNT(*) FROM ingest_state").fetchone()[0] == 0
+
+
+def test_migration_002_backfills_run_user(tmp_path):
+    """A store created at 001 keeps its data and gains runs.user from event payloads."""
+    conn = db.connect(tmp_path / "cairn.db")
+    conn.execute(
+        "CREATE TABLE schema_migrations"
+        " (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied TEXT NOT NULL)"
+    )
+    version, name, sql = db.available_migrations()[0]
+    conn.executescript(sql)
+    conn.execute("INSERT INTO schema_migrations VALUES (1, ?, 't')", (name,))
+    conn.execute(
+        "INSERT INTO events VALUES ('R1', 'cmd', 't', 'hp', ?)",
+        ('{"id": "s-1", "user": "alice"}',),
+    )
+    conn.execute("INSERT INTO runs (id, cmd) VALUES ('R1', 'echo hi')")
+    assert db.migrate(conn) == [v for v, _, _ in db.available_migrations()[1:]]
+    assert tuple(conn.execute("SELECT user, cmd FROM runs").fetchone()) == ("alice", "echo hi")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(artifacts)")}
+    assert {"host", "path", "kind"} <= cols

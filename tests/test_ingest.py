@@ -186,3 +186,135 @@ def test_missing_events_dir(tmp_path):
 )
 def test_looks_secret(cmd, secret):
     assert looks_secret(cmd) is secret
+
+
+# --- file events --------------------------------------------------------------------------
+
+SHA_A = "a" * 64
+SHA_B = "b" * 64
+
+
+def file_event(n: int, path: str = "/data/proj/runs/rmsd.xvg", op: str = "modified", **kw):
+    ev = {
+        "v": 1,
+        "type": "file",
+        "id": f"01JFILEEVENT{n:014d}",
+        "host": "synth",
+        "user": "tester",
+        "path": path,
+        "op": op,
+        "sha256": SHA_A,
+        "size": 10,
+        "mtime": f"2026-10-28T10:01:{n:02d}.000Z",
+        "fp": "full",
+        "stored": True,
+        "ts": f"2026-10-28T10:01:{n:02d}.100Z",
+    }
+    ev.update(kw)
+    return ev
+
+
+def test_file_events_become_artifacts_and_versions(store):
+    conn, events = store
+    append(
+        events / "synth-2026-10-28-watch.jsonl",
+        file_event(1, op="created"),
+        file_event(2),  # same content rewritten
+        file_event(3, sha256=SHA_B, size=12),
+        file_event(4, path="/data/proj/fig.png", op="created"),
+        file_event(5, op="deleted", sha256=None, size=None, mtime=None, fp=None),
+    )
+    stats = ingest(conn, events)
+    assert stats.files_seen == 5 and stats.malformed == 0
+    arts = conn.execute("SELECT host, path, kind FROM artifacts ORDER BY path").fetchall()
+    assert [tuple(a) for a in arts] == [
+        ("synth", "/data/proj/fig.png", "figure"),
+        ("synth", "/data/proj/runs/rmsd.xvg", "data"),
+    ]
+    versions = conn.execute(
+        "SELECT v.sha256, v.size, v.ts, v.fp FROM artifact_versions v JOIN artifacts a"
+        " ON a.id = v.artifact_id WHERE a.path LIKE '%rmsd.xvg' ORDER BY v.ts"
+    ).fetchall()
+    # Identical content is one version, first seen at its first event.
+    assert [tuple(v) for v in versions] == [
+        (SHA_A, 10, "2026-10-28T10:01:01.100Z", "full"),
+        (SHA_B, 12, "2026-10-28T10:01:03.100Z", "full"),
+    ]
+    changes = conn.execute("SELECT op, version_id IS NULL FROM file_events ORDER BY ts").fetchall()
+    assert [tuple(c) for c in changes] == [
+        ("created", 0),
+        ("modified", 0),
+        ("modified", 0),
+        ("created", 0),
+        ("deleted", 1),
+    ]
+
+
+def test_same_path_on_two_hosts_is_two_artifacts(store):
+    conn, events = store
+    append(events / "x.jsonl", file_event(1), file_event(2, host="workstation"))
+    ingest(conn, events)
+    assert conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0] == 2
+
+
+def test_stored_flag_follows_local_object_store(store, tmp_path):
+    conn, events = store
+    objects = tmp_path / "objects"
+    (objects / SHA_A[:2]).mkdir(parents=True)
+    (objects / SHA_A[:2] / SHA_A).write_text("x")
+    append(events / "x.jsonl", file_event(1), file_event(2, sha256=SHA_B, path="/d/other.csv"))
+    ingest(conn, events, objects_dir=objects)
+    stored = dict(conn.execute("SELECT sha256, stored FROM artifact_versions").fetchall())
+    assert stored == {SHA_A: 1, SHA_B: 0}
+
+
+def test_bad_file_events_are_skipped(store):
+    conn, events = store
+    append(
+        events / "x.jsonl",
+        file_event(1, sha256=None),  # a change without a hash
+        file_event(2, op="exploded"),
+        file_event(3, user=""),
+        file_event(4),
+    )
+    stats = ingest(conn, events)
+    assert (stats.malformed, stats.files_seen) == (3, 1)
+
+
+def test_file_event_reingest_is_idempotent(store):
+    conn, events = store
+    append(events / "x.jsonl", file_event(1), file_event(2))
+    ingest(conn, events)
+    (events / "copy.jsonl").write_text((events / "x.jsonl").read_text())
+    stats = ingest(conn, events)
+    assert stats.duplicates == 2
+    assert conn.execute("SELECT COUNT(*) FROM file_events").fetchone()[0] == 2
+
+
+def test_run_rows_keep_user(store):
+    conn, events = store
+    append(events / "x.jsonl", cmd_event(1))
+    ingest(conn, events)
+    assert runs(conn)[0]["user"] == "tester"
+
+
+@pytest.mark.parametrize(
+    "path, kind",
+    [
+        ("/p/fig.png", "figure"),
+        ("/p/plot.SVG", "figure"),
+        ("/p/md.mdp", "config"),
+        ("/p/params_v2.txt", "config"),
+        ("/p/config.yaml", "config"),
+        ("/p/fit.py", "script"),
+        ("/p/run.sh", "script"),
+        ("/p/md.log", "log"),
+        ("/p/rmsd.xvg", "data"),
+        ("/p/traj.xtc", "data"),
+        ("/p/README", "other"),
+    ],
+)
+def test_artifact_kind(path, kind):
+    from cairnlab.capture.ingest import artifact_kind
+
+    assert artifact_kind(path) == kind

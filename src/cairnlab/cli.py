@@ -177,10 +177,11 @@ def ingest() -> None:
         raise typer.Exit(1)
     conn = db.connect(config.db_path(home))
     db.migrate(conn)
-    stats = ingest_events(conn, config.events_dir(home))
+    stats = ingest_events(conn, config.events_dir(home), config.objects_dir(home))
     conn.close()
     out.print(
-        f"Ingested {stats.runs} new runs from {stats.lines} lines in {stats.files} files"
+        f"Ingested {stats.runs} new runs and {stats.files_seen} file events"
+        f" from {stats.lines} lines in {stats.files} files"
         f" ({stats.duplicates} duplicates, {stats.malformed} malformed,"
         f" {stats.unsupported} unsupported).",
         soft_wrap=True,
