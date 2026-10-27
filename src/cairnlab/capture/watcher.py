@@ -6,6 +6,8 @@ feeds it from watchdog; ``cairn scan`` feeds it a one-shot directory walk.
 
 Settling rules:
 - every path waits ``debounce`` (0.5 s) after its last event, so bursts become one event;
+  a close-after-write (the writer is done) settles in 0.1 s, so outputs of commands run
+  in quick succession stay separate events;
 - files over 50 MB also wait until their mtime is 30 s old and no process has them
   open, then get the fast fingerprint once;
 - GROMACS checkpoints (``*.cpt``) wait ``cpt_quiet`` (20 min, longer than mdrun's
@@ -49,6 +51,7 @@ BUILTIN_IGNORE = [
 ]
 
 DEBOUNCE_S = 0.5
+CLOSED_S = 0.1  # after IN_CLOSE_WRITE the writer is done; just absorb trailing events
 SETTLE_S = 30.0
 CPT_QUIET_S = 20 * 60.0
 RECHECK_S = 5.0
@@ -148,6 +151,7 @@ class _Pending:
     last: float
     src: str | None = None
     not_before: float = 0.0
+    closed: bool = False
 
 
 @dataclass
@@ -177,8 +181,12 @@ class FileTracker:
 
     # -- input -----------------------------------------------------------------------
 
-    def notify(self, path: Path, op: str, src: Path | None = None) -> None:
-        """Record that ``path`` changed (op: created|modified|deleted|moved)."""
+    def notify(self, path: Path, op: str, src: Path | None = None, closed: bool = False) -> None:
+        """Record that ``path`` changed (op: created|modified|deleted|moved).
+
+        ``closed`` marks a close-after-write: the change is complete, so it settles in
+        0.1 s instead of the full debounce, keeping quick successive runs apart.
+        """
         if self.rules.ignored(path):
             return
         now = self.clock()
@@ -186,14 +194,17 @@ class FileTracker:
         with self._lock:
             p = self.pending.get(key)
             if p is None:
-                self.pending[key] = _Pending(op, now, now, str(src) if src else None)
+                p = self.pending[key] = _Pending(op, now, now, str(src) if src else None)
             else:
                 p.last = now
                 p.not_before = 0.0
+                p.closed = False
                 if op in ("deleted", "moved", "created"):
                     p.op = op
                 if src:
                     p.src = str(src)
+            if closed:
+                p.closed = True
 
     # -- output ----------------------------------------------------------------------
 
@@ -209,7 +220,7 @@ class FileTracker:
             due = [
                 (k, p)
                 for k, p in self.pending.items()
-                if flush or (now - p.last >= self._quiet_for(k) and now >= p.not_before)
+                if flush or (now - p.last >= self._quiet_for(k, p) and now >= p.not_before)
             ]
             for k, _ in due:
                 del self.pending[k]
@@ -219,8 +230,10 @@ class FileTracker:
                 emitted += 1
         return emitted
 
-    def _quiet_for(self, key: str) -> float:
-        return self.cpt_quiet if key.endswith(".cpt") else self.debounce
+    def _quiet_for(self, key: str, p: _Pending) -> float:
+        if key.endswith(".cpt"):
+            return self.cpt_quiet
+        return min(self.debounce, CLOSED_S) if p.closed else self.debounce
 
     def _requeue(self, key: str, p: _Pending, now: float) -> None:
         p.not_before = now + RECHECK_S
@@ -330,7 +343,7 @@ def watch(
         "modified": "modified",
         "deleted": "deleted",
         "moved": "moved",
-        "closed": "modified",
+        "closed": "modified",  # IN_CLOSE_WRITE
     }
 
     class Handler(FileSystemEventHandler):
@@ -343,7 +356,8 @@ def watch(
                 tracker.notify(src, "deleted")
                 tracker.notify(Path(os.fsdecode(event.dest_path)), "moved", src=src)
             else:
-                tracker.notify(Path(os.fsdecode(event.src_path)), op)
+                closed = event.event_type == "closed"
+                tracker.notify(Path(os.fsdecode(event.src_path)), op, closed=closed)
 
     observer = Observer()
     for root in roots:
@@ -358,7 +372,7 @@ def watch(
         on_ready(found)
     last_save = time.monotonic()
     try:
-        while not stop.wait(0.2):
+        while not stop.wait(0.05):
             if tracker.process_due() or time.monotonic() - last_save > 60:
                 tracker.save_state()
                 last_save = time.monotonic()

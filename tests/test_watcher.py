@@ -279,3 +279,29 @@ def test_real_watchdog(tmp_path):
     evs = read_events(events)
     assert [Path(e["path"]).name for e in evs] == ["out.csv"]
     assert evs[0]["op"] == "created"
+
+
+def test_close_after_write_settles_quickly(env):
+    """IN_CLOSE_WRITE means the writer is done: no need to wait the full debounce."""
+    root, events, tracker, clock = env
+    f = root / "fit.json"
+    write(f, "v1")
+    tracker.notify(f, "modified")
+    tracker.notify(f, "modified", closed=True)
+    clock.advance(0.15)
+    assert tracker.process_due() == 1
+    write(f, "v2")  # a second run rewrites it 0.6 s later: a separate event
+    tracker.notify(f, "modified")
+    tracker.notify(f, "modified", closed=True)
+    clock.advance(0.15)
+    assert tracker.process_due() == 1
+    assert len(read_events(events)) == 2
+
+
+def test_close_does_not_shortcut_checkpoints(env):
+    root, events, tracker, clock = env
+    f = root / "md.cpt"
+    write(f, "x")
+    tracker.notify(f, "modified", closed=True)
+    clock.advance(1)
+    assert tracker.process_due() == 0
