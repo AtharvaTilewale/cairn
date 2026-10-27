@@ -3,6 +3,8 @@
 import sqlite3
 from dataclasses import dataclass
 
+from cairnlab.store.models import Run
+
 
 @dataclass(frozen=True)
 class HostSummary:
@@ -26,6 +28,12 @@ def hosts(conn: sqlite3.Connection) -> list[HostSummary]:
         "SELECT COALESCE(host, '?'), COUNT(*), MAX(ts) FROM events GROUP BY host ORDER BY host"
     )
     return [HostSummary(host=h, events=n, last_ts=ts) for h, n, ts in rows]
+
+
+def recent_runs(conn: sqlite3.Connection, limit: int = 10) -> list[Run]:
+    """The latest ``limit`` runs, oldest first."""
+    rows = conn.execute("SELECT * FROM runs ORDER BY ts_start DESC LIMIT ?", (limit,))
+    return [Run(**dict(r)) for r in rows][::-1]
 
 
 def ingest_offsets(conn: sqlite3.Connection) -> dict[str, int]:

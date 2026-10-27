@@ -92,7 +92,10 @@ def init(
     out.print(f"Cairn store ready: {home}")
     if applied:
         out.print(f"  applied migrations: {', '.join(map(str, applied))}")
-    out.print('Start capture in this terminal:  export CAIRN_USER=<you>; eval "$(cairn activate)"')
+    out.print(
+        'Start capture in this terminal:  export CAIRN_USER=<you>; eval "$(cairn activate)"',
+        soft_wrap=True,
+    )
 
 
 @app.command()
@@ -110,6 +113,15 @@ def status() -> None:
         table = Table("host", "events", "last event (UTC)")
         for h in hosts:
             table.add_row(h.host, str(h.events), h.last_ts)
+        out.print(table)
+
+    recent = repo.recent_runs(conn, limit=10)
+    if recent:
+        table = Table("start (UTC)", "host", "exit", "command", title="Recent runs")
+        for r in recent:
+            exit_code = "?" if r.exit is None else str(r.exit)
+            style = "red" if r.exit not in (0, None) else None
+            table.add_row(r.ts_start, r.host, exit_code, r.cmd, style=style)
         out.print(table)
 
     offsets = repo.ingest_offsets(conn)
@@ -163,7 +175,8 @@ def ingest() -> None:
     out.print(
         f"Ingested {stats.runs} new runs from {stats.lines} lines in {stats.files} files"
         f" ({stats.duplicates} duplicates, {stats.malformed} malformed,"
-        f" {stats.unsupported} unsupported)."
+        f" {stats.unsupported} unsupported).",
+        soft_wrap=True,
     )
     if stats.malformed:
         err.print("Malformed lines were skipped; run with --verbose for details.")

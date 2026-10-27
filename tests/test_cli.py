@@ -135,6 +135,7 @@ def test_ingest_then_status(project):
     status = runner.invoke(app, ["status"]).output
     assert "Runs: 1" in status
     assert "synth" in status and "2026-10-28T09:00:00.000Z" in status
+    assert "Recent runs" in status and "echo hi" in status
     assert "Not yet ingested" not in status
     assert "0 new runs" in runner.invoke(app, ["ingest"]).output
 

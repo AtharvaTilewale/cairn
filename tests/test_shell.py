@@ -305,6 +305,7 @@ def test_done_when_scenario(tmp_path):
     assert "2 new runs" in (s.cwd / "ingest.txt").read_text()
     status = (s.cwd / "status.txt").read_text()
     assert "Runs: 2" in status and "testhost" in status
+    assert re.search(r"echo hi", status) and re.search(r"\b1\b.*false", status)
 
     conn = sqlite3.connect(s.cwd / ".cairn" / "cairn.db")
     rows = conn.execute("SELECT cmd, exit FROM runs ORDER BY ts_start").fetchall()
