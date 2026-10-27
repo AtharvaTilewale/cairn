@@ -103,17 +103,51 @@ __cairn_ignored() {
   local c=${1-} w
   # Strip leading whitespace, then take the first word.
   c=${c#"${c%%[![:space:]]*}"}
-  # Only a lone simple command is ignored; "cd x && make" is still recorded.
-  case $c in
-    '' | *[\;\&\|]* | *$'\n'*) return 1 ;;
-  esac
   w=${c%%[[:space:]]*}
   case $__cairn_ignore in
-    *" $w "*) return 0 ;;
+    *" $w "*) ;;
+    *)
+      case $c in
+        'cairn note' | 'cairn note'[[:space:]]*) ;;
+        *) return 1 ;;
+      esac
+      ;;
   esac
+  # Command substitution runs something else: always record.
   case $c in
-    'cairn note' | 'cairn note '*) return 0 ;;
+    *'$('* | *'`'*) return 1 ;;
   esac
+  # Only a lone simple command is ignored: "cd x && make" is still recorded, but
+  # separators inside quotes (cairn note "a; b") do not count.
+  ! __cairn_has_separator "$c"
+}
+
+# Return 0 if $1 contains ; & | or a newline outside quotes. Only called for the
+# handful of ignorable commands, so the character loop costs well under a millisecond.
+__cairn_has_separator() {
+  local s=${1-} i=0 n ch q=
+  n=${#s}
+  case $s in
+    *[\;\&\|]* | *$'\n'*) ;;
+    *) return 1 ;;
+  esac
+  while [ "$i" -lt "$n" ]; do
+    ch=${s:i:1}
+    if [ -n "$q" ]; then
+      if [ "$ch" = "$q" ]; then
+        q=
+      elif [ "$q" = '"' ] && [ "$ch" = '\' ]; then
+        i=$((i + 1))
+      fi
+    else
+      case $ch in
+        "'" | '"') q=$ch ;;
+        '\') i=$((i + 1)) ;;
+        ';' | '&' | '|' | $'\n') return 0 ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
   return 1
 }
 
@@ -184,7 +218,7 @@ __cairn_write() {
     __cairn_iso "$__cairn_t0_sec" "$__cairn_t0_ms"
     cwd=$__cairn_t0_cwd
   else
-    __cairn_iso "${__cairn_p_sec:-0}" 000
+    __cairn_iso "${__cairn_p_sec:-0}" "${__cairn_p_ms:-000}"
     cwd=${__cairn_p_cwd:-$PWD}
     approx=',"ts_start_approx":true'
   fi
@@ -240,8 +274,16 @@ __cairn_arm() {
     *) PS1=$__cairn_marker${PS1-} ;;
   esac
   # Prompt time and cwd, the fallback start for lines the DEBUG trap never sees.
-  # printf %(...)T is a bash 4.2+ builtin, so this costs no fork.
-  printf -v __cairn_p_sec '%(%s)T' -1
+  # EPOCHREALTIME (bash 5) gives milliseconds; printf %(...)T (bash 4.2+) gives whole
+  # seconds. Neither forks.
+  if [ -n "${EPOCHREALTIME-}" ]; then
+    __cairn_now
+    __cairn_p_sec=$__cairn_sec
+    __cairn_p_ms=$__cairn_ms
+  else
+    printf -v __cairn_p_sec '%(%s)T' -1
+    __cairn_p_ms=000
+  fi
   __cairn_p_cwd=$PWD
   __cairn_armed=1
   return $rc
@@ -260,11 +302,12 @@ __cairn_wrapper() {
 
 __cairn_unload() {
   unset -f __cairn_json_escape __cairn_iso __cairn_now __cairn_ignored __cairn_secret \
+    __cairn_has_separator \
     __cairn_debug __cairn_write __cairn_precmd __cairn_arm __cairn_wrapper \
     __cairn_activate __cairn_deactivate __cairn_grab_trap __cairn_unload
   unset __cairn_marker __cairn_ignore __cairn_j __cairn_ts __cairn_sec __cairn_ms \
     __cairn_armed __cairn_t0_sec __cairn_t0_ms __cairn_t0_cwd __cairn_t0_cmd __cairn_last_hist \
-    __cairn_last_text __cairn_seq __cairn_host __cairn_p_sec __cairn_p_cwd __cairn_session_id __cairn_default_home \
+    __cairn_last_text __cairn_seq __cairn_host __cairn_p_sec __cairn_p_ms __cairn_p_cwd __cairn_session_id __cairn_default_home \
     __cairn_debug_probe
 }
 

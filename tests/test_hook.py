@@ -150,6 +150,18 @@ def test_secret_detection(cmd, secret):
         ("cairn ingest", False),
         ("cairn notebook", False),
         ("python fit.py", False),
+        # Separators inside quotes do not make a compound command...
+        ('cairn note "first fit undershoots; try a larger cutoff"', True),
+        ("cairn note 'a && b | c'", True),
+        ('ls "odd;name"', True),
+        ('cairn note "two\nlines"', True),
+        ("cairn note it\\'s fine", True),
+        # ...but unquoted ones do, and command substitution always runs something.
+        ("cairn note 'x'; python fit.py", False),
+        ('cairn note "a" && rm -rf results', False),
+        ("ls $(rm -rf x)", False),
+        ("ls `rm -rf x`", False),
+        ('cairn note "$(date)"', False),
     ],
 )
 def test_ignore_list(cmd, ignored):
