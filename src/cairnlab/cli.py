@@ -21,6 +21,7 @@ from rich.table import Table
 from ulid import ULID
 
 from cairnlab import config
+from cairnlab.agent.reproduce import ReproduceAgent
 from cairnlab.capture.envsnap import EnvSnapshotter
 from cairnlab.capture.gitsnap import GitSnapshotter
 from cairnlab.capture.hooks import activation_script, deactivation_script
@@ -242,6 +243,8 @@ def ingest() -> None:
     )
     if linked:
         out.print(f"Linked {linked.runs} runs: {_edge_summary(linked.edges)}.", soft_wrap=True)
+    if stats.malformed:
+        err.print("Malformed lines were skipped; run with --verbose for details.")
 
 
 def _reader(home: Path) -> ReadsetReader | None:
@@ -275,8 +278,6 @@ def link() -> None:
     stats = link_runs(conn, reader=_reader(home))
     conn.close()
     out.print(f"Linked {stats.runs} runs: {_edge_summary(stats.edges)}.", soft_wrap=True)
-    if stats.malformed:
-        err.print("Malformed lines were skipped; run with --verbose for details.")
 
 
 # --- not implemented yet -----------------------------------------------------------------
@@ -721,13 +722,102 @@ def _trace_tree(t, tz, root: Path | None):
     return tree
 
 
+def _resolve_target(conn, path: str, at: str | None, sha: str | None) -> str:
+    host = config.local_host()
+    if path.startswith("A:"):
+        vid = path[2:]
+    else:
+        vid = None
+        at_ts = normalize_ts(at) if at else None
+        for candidate in dict.fromkeys([os.path.abspath(path), str(Path(path).resolve())]):
+            vid = resolve_version(conn, host, candidate, at=at_ts, sha=sha)
+            if vid:
+                break
+    if not vid or graph_node(conn, vid) is None:
+        err.print(f"[red]No recorded version of {path!r}[/red] on {host}.")
+        raise typer.Exit(1)
+    return vid
+
+
 @app.command()
 def reproduce(
-    path: Annotated[str, typer.Argument(help="Artefact path.")],
-    yes: Annotated[bool, typer.Option("--yes", help="Do not ask before executing.")] = False,
+    path: Annotated[str, typer.Argument(help="File (or A:<version>) to regenerate.")],
+    yes: Annotated[bool, typer.Option("--yes", help="Run the plan without asking.")] = False,
+    at: Annotated[str | None, typer.Option(help="The version current at this time.")] = None,
+    sha: Annotated[str | None, typer.Option(help="The version with this hash prefix.")] = None,
+    rel_tol: Annotated[float, typer.Option(help="Tolerance for numbers.")] = 1e-6,
 ) -> None:
-    """Re-run the cheap final steps for a file and verify the output matches."""
-    _todo("reproduce")
+    """Re-run the cheap final steps for a file in a scratch directory and check the result.
+
+    Muse Spark reads the trace and proposes a plan; nothing runs until you approve it.
+    Only recorded commands under 10 minutes with stored inputs can be re-run. The
+    scratch directory is not a security sandbox: commands run as you.
+    """
+    home = _require_home()
+    conn = db.connect(config.db_path(home))
+    db.migrate(conn)
+    vid = _resolve_target(conn, path, at, sha)
+    try:
+        client = Client(home=home)
+    except LLMError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+
+    def confirm(plan) -> bool:
+        out.print(f"\n[bold]Plan:[/bold] {plan.summary}", soft_wrap=True)
+        for i, st in enumerate(plan.steps, 1):
+            out.print(f"  {i}. re-run [cyan]{st.cmd}[/cyan]", soft_wrap=True, highlight=False)
+            out.print(f"     check {len(st.check)} output(s); {st.why}", soft_wrap=True)
+            if st.extra_inputs:
+                out.print(f"     extra inputs: {', '.join(st.extra_inputs)}")
+        for r in plan.rejected:
+            out.print(f"  [yellow]not re-run:[/yellow] {r}", soft_wrap=True)
+        if yes:
+            return True
+        return typer.confirm("Run these steps in a scratch directory?", default=False)
+
+    usage = home / "usage.jsonl"
+    before = usage.stat().st_size if usage.is_file() else 0
+    err.print(f"Asking {client.model} to plan a reproduction of {path}...")
+    agent = ReproduceAgent(
+        client,
+        conn,
+        config.objects_dir(home),
+        vid,
+        confirm,
+        say=lambda m: err.print(m, soft_wrap=True),
+        rel_tol=rel_tol,
+    )
+    try:
+        report = agent.run()
+    except LLMError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    finally:
+        conn.close()
+    colour = {"reproduced": "green", "reproduced_close": "green", "not_reproduced": "red"}.get(
+        report.verdict, "yellow"
+    )
+    out.print(f"\n[bold {colour}]{report.verdict.replace('_', ' ')}[/bold {colour}]")
+    for c in report.checks:
+        out.print(
+            f"  {_rel(c.path, config.project_root(home))}: {c.outcome}"
+            + (f" ({c.detail})" if c.detail else ""),
+            soft_wrap=True,
+        )
+    if report.explanation:
+        out.print(report.explanation, soft_wrap=True)
+    out_dir = home / "reproductions"
+    out_dir.mkdir(exist_ok=True)
+    saved = out_dir / f"{ULID()}.json"
+    saved.write_text(json.dumps(report.to_dict(), indent=1))
+    out.print(
+        f"[dim]{report.tool_calls} tool calls, model cost"
+        f" ${_usage_cost(home, before):.4f}; report saved to {saved}[/dim]"
+    )
+    raise typer.Exit(
+        {"reproduced": 0, "reproduced_close": 0, "not_reproduced": 1}.get(report.verdict, 3)
+    )
 
 
 @app.command()

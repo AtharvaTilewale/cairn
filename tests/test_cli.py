@@ -72,7 +72,6 @@ def test_status_on_empty_store(project):
 @pytest.mark.parametrize(
     "args",
     [
-        ["reproduce", "fig.png", "--yes"],
         ["ask", "what changed?"],
         ["report", "week"],
         ["serve"],
@@ -217,3 +216,13 @@ def test_entry_without_api_key_fails_cleanly(project):
     runner.invoke(app, ["init"])
     result = runner.invoke(app, ["entry", "today"])
     assert result.exit_code == 1 and "MODEL_API_KEY" in result.output
+
+
+def test_link_command_and_malformed_warning(project):
+    runner.invoke(app, ["init"])
+    (project / ".cairn" / "events" / "bad.jsonl").write_text("not json\n")
+    result = runner.invoke(app, ["ingest"])
+    assert result.exit_code == 0 and "Malformed lines were skipped" in result.output
+    linked = runner.invoke(app, ["link"])
+    assert linked.exit_code == 0, linked.output
+    assert "Linked 0 runs" in linked.output
