@@ -90,6 +90,18 @@ def load_config(home: Path) -> dict[str, Any]:
         return tomllib.load(fh)
 
 
+def timezone(home: Path):
+    """Time zone for calendar days and displayed times: [entry] timezone, else the system's."""
+    name = load_config(home).get("entry", {}).get("timezone")
+    if name:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(name)
+    from datetime import datetime
+
+    return datetime.now().astimezone().tzinfo
+
+
 def readset_enabled(home: Path) -> bool:
     """Whether linking may send scripts to Muse Spark (config [link] readset, CAIRN_READSET)."""
     env = os.environ.get("CAIRN_READSET")
@@ -114,4 +126,8 @@ backend = "spark"  # spark | glimmer
 # Send each new script version to Muse Spark once to learn which files it reads and
 # writes (cached by hash). Set to false, or CAIRN_READSET=0, to keep scripts local.
 readset = true
+
+[entry]
+# Calendar days and displayed times use this zone; default: the system time zone.
+# timezone = "Asia/Kolkata"
 """

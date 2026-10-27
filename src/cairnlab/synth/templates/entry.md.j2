@@ -1,0 +1,67 @@
+# {{ entry.title }}
+
+*{{ day }}{% if project %} · {{ project }}{% endif %} · {{ runs }} recorded runs · written by Cairn with {{ model }}*
+
+**Goal.** {{ cite(entry.goal) }}
+{% for phase in entry.phases %}
+
+## {{ phase.heading }}
+{% if phase.narrative %}
+
+{{ cite(phase.narrative) }}
+{% endif %}
+{% if phase.claims %}
+
+{% for claim in phase.claims %}
+- {{ claim.text }}{{ refs(claim.evidence) }}
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% if entry.results %}
+
+## Results
+
+{% for r in entry.results %}
+- **{{ label(r.artifact) }}**{{ refs([r.artifact]) }}: {{ r.description }}
+{% endfor %}
+{% endif %}
+{% if entry.drift %}
+
+## Parameter changes
+
+{% for d in entry.drift %}
+- {{ d.text }}{{ refs(d.evidence) }}
+{% endfor %}
+{% endif %}
+{% if entry.decisions %}
+
+## Decisions
+
+{% for d in entry.decisions %}
+- {{ d.text }}{{ refs([d.note]) }}
+{% endfor %}
+{% endif %}
+{% if entry.open_questions %}
+
+## Open questions
+
+{% for q in entry.open_questions %}
+- {{ cite(q) }}
+{% endfor %}
+{% endif %}
+{% if entry.next_steps %}
+
+## Next steps
+
+{% for s in entry.next_steps %}
+- {{ cite(s) }}
+{% endfor %}
+{% endif %}
+{% if footnotes %}
+
+---
+
+{% for n, ident, text in footnotes %}
+[^{{ n }}]: `{{ ident }}` {{ text }} (`cairn show {{ ident }}`)
+{% endfor %}
+{% endif %}

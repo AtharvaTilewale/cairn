@@ -1,12 +1,13 @@
 """Cairn command-line interface: one sub-command per feature."""
 
+import json
 import logging
 import os
 import re
 import signal
 import sys
 import threading
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -32,6 +33,9 @@ from cairnlab.provenance.linker import link as link_runs
 from cairnlab.provenance.readset import ReadsetReader
 from cairnlab.store import db, repo
 from cairnlab.store.models import format_ts, normalize_ts, utc_now
+from cairnlab.synth.claims import check_faithfulness
+from cairnlab.synth.claims import summarize as summarize_claims
+from cairnlab.synth.entry import save_faithfulness, write_entry
 
 app = typer.Typer(
     help="Cairn: the lab notebook that writes itself.",
@@ -396,13 +400,90 @@ def note(text: Annotated[list[str] | None, typer.Argument(help="Note text.")] = 
     _todo("note")
 
 
+def _parse_day(text: str, tz) -> date:
+    today = datetime.now(tz).date()
+    if text == "today":
+        return today
+    if text == "yesterday":
+        return today - timedelta(days=1)
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        err.print(f"[red]Bad day:[/red] {text!r} (use today, yesterday or YYYY-MM-DD)")
+        raise typer.Exit(2) from None
+
+
+def _usage_cost(home: Path, since_bytes: int) -> float:
+    usage = home / "usage.jsonl"
+    if not usage.is_file():
+        return 0.0
+    with usage.open("rb") as fh:
+        fh.seek(since_bytes)
+        return sum(json.loads(line)["cost_usd"] for line in fh.read().splitlines() if line)
+
+
 @app.command()
 def entry(
-    day: Annotated[str, typer.Argument(help="today or YYYY-MM-DD.")] = "today",
-    backend: Annotated[str, typer.Option(help="spark or glimmer.")] = "spark",
+    day: Annotated[str, typer.Argument(help="today, yesterday or YYYY-MM-DD.")] = "today",
+    backend: Annotated[str, typer.Option(help="spark (Meta Model API) or glimmer.")] = "spark",
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show what would be sent; call nothing.")
+    ] = False,
+    check: Annotated[
+        bool, typer.Option("--check/--no-check", help="Verify the entry's claims afterwards.")
+    ] = True,
 ) -> None:
-    """Write the daily notebook entry."""
-    _todo("entry")
+    """Write the day's notebook entry with Muse Spark; every claim cites the log."""
+    home = _require_home()
+    conn = db.connect(config.db_path(home))
+    db.migrate(conn)
+    tz = config.timezone(home)
+    the_day = _parse_day(day, tz)
+    root = config.project_root(home)
+    if dry_run:
+        res = write_entry(conn, home, the_day, tz=tz, root=root, backend=backend, dry_run=True)
+        out.print(res.prompt, markup=False, highlight=False, soft_wrap=True)
+        err.print(
+            f"{len(res.context.figures)} figures would be attached;"
+            f" about {len(res.prompt) // 4:,} tokens of log text."
+        )
+        return
+    try:
+        client = Client(home=home, backend=backend)
+    except LLMError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    usage = home / "usage.jsonl"
+    before = usage.stat().st_size if usage.is_file() else 0
+    err.print(f"Writing the entry for {the_day} with {client.model}...")
+    try:
+        res = write_entry(conn, home, the_day, client=client, tz=tz, root=root, backend=backend)
+        if check and res.entry:
+            err.print("Checking its claims against the store...")
+            res.verdicts = check_faithfulness(
+                client, conn, config.objects_dir(home), res.markdown, res.prompt
+            )
+            res.faithfulness = summarize_claims(res.verdicts)
+            save_faithfulness(conn, res)
+    except LLMError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    finally:
+        conn.close()
+    out.print(f"Entry written: {res.path}")
+    if res.dropped:
+        out.print(f"  {len(res.dropped)} uncited or invalid items dropped (see --verbose)")
+    if res.faithfulness:
+        f = res.faithfulness
+        score = "n/a" if f["faithfulness"] is None else f"{f['faithfulness']:.0%}"
+        out.print(
+            f"  claims: {f['supported']} supported, {f['unsupported']} unsupported,"
+            f" {f['unverifiable']} unverifiable (faithfulness {score})"
+        )
+        for v in res.verdicts:
+            if v.verdict == "unsupported":
+                out.print(f"  [yellow]unsupported:[/yellow] {v.text}", soft_wrap=True)
+    out.print(f"  model cost: ${_usage_cost(home, before):.4f}")
 
 
 @app.command()
@@ -433,9 +514,108 @@ def report(period: Annotated[str, typer.Argument(help="week")] = "week") -> None
 
 
 @app.command()
-def show(id: Annotated[str, typer.Argument(help="Event, run or artefact id.")]) -> None:
-    """Print an event, run or artefact."""
-    _todo("show")
+def show(ident: Annotated[str, typer.Argument(help="R:<run>, A:<version>, N:<note> or a ULID.")]):
+    """Print a run, a file version or a note (the IDs cited in entries)."""
+    home = _require_home()
+    conn = db.connect(config.db_path(home))
+    db.migrate(conn)
+    tz = config.timezone(home)
+    kind, _, key = ident.rpartition(":")
+    key = key.upper()
+    try:
+        if kind in ("", "R") and _show_run(conn, key, tz):
+            return
+        if kind in ("", "A") and _show_version(conn, key, tz):
+            return
+        if kind in ("", "N") and _show_note(conn, key, tz):
+            return
+    finally:
+        conn.close()
+    err.print(f"[red]Nothing with id {ident!r} in this store.[/red]")
+    raise typer.Exit(1)
+
+
+def _local(ts: str | None, tz) -> str:
+    if not ts:
+        return "-"
+    return datetime.fromisoformat(ts).astimezone(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _show_run(conn, key: str, tz) -> bool:
+    r = conn.execute("SELECT * FROM runs WHERE id = ?", (key,)).fetchone()
+    if r is None:
+        return False
+    out.print(f"[bold]Run R:{r['id']}[/bold]")
+    out.print(f"  $ {r['cmd']}", markup=False, soft_wrap=True)
+    status = f"exit {r['exit']}" if r["exit"] is not None else r["status"]
+    out.print(f"  {_local(r['ts_start'], tz)} → {_local(r['ts_end'], tz)}  ({status})")
+    out.print(f"  {r['user']}@{r['host']}  cwd {r['cwd']}", markup=False)
+    if r["git_commit"]:
+        dirty = {1: ", uncommitted changes", 0: ", clean"}.get(r["git_dirty"], "")
+        out.print(f"  git {r['git_branch']}@{r['git_commit'][:12]}{dirty}")
+        if r["git_diffstat"]:
+            out.print(f"      {r['git_diffstat']}")
+    if r["env_name"]:
+        out.print(f"  env {r['env_name']}" + (f" ({r['env_hash'][:12]})" if r["env_hash"] else ""))
+    table = Table("role", "file", "version", "method", "confidence")
+    for e in conn.execute(
+        "SELECT e.role, a.path, v.id, v.sha256, e.method, e.confidence FROM edges e"
+        " JOIN artifact_versions v ON v.id = e.version_id JOIN artifacts a"
+        " ON a.id = v.artifact_id WHERE e.run_id = ? ORDER BY e.role DESC, a.path",
+        (key,),
+    ):
+        table.add_row(
+            e["role"],
+            e["path"],
+            f"A:{e['id']} ({e['sha256'][:8]})",
+            e["method"],
+            f"{e['confidence']:.1f}",
+        )
+    if table.row_count:
+        out.print(table)
+    return True
+
+
+def _show_version(conn, key: str, tz) -> bool:
+    v = conn.execute(
+        "SELECT v.*, a.path, a.host, a.kind FROM artifact_versions v JOIN artifacts a"
+        " ON a.id = v.artifact_id WHERE v.id = ?",
+        (key,),
+    ).fetchone()
+    if v is None:
+        return False
+    out.print(f"[bold]File version A:{v['id']}[/bold]")
+    out.print(f"  {v['host']}:{v['path']}  ({v['kind']})", markup=False)
+    out.print(f"  sha256 {v['sha256']} ({v['fp']})  {v['size']} bytes")
+    out.print(
+        f"  first seen {_local(v['ts'], tz)}; "
+        + ("copy stored in .cairn/objects" if v["stored"] else "no stored copy")
+    )
+    for role in ("generated", "used"):
+        rows = conn.execute(
+            "SELECT r.id, r.ts_start, r.cmd FROM edges e JOIN runs r ON r.id = e.run_id"
+            " WHERE e.version_id = ? AND e.role = ? ORDER BY r.ts_start",
+            (key, role),
+        ).fetchall()
+        for r in rows:
+            label = "generated by" if role == "generated" else "used by"
+            out.print(
+                f"  {label} R:{r['id']} {_local(r['ts_start'], tz)}: {r['cmd']}",
+                markup=False,
+                soft_wrap=True,
+            )
+    return True
+
+
+def _show_note(conn, key: str, tz) -> bool:
+    n = conn.execute("SELECT * FROM notes WHERE id = ?", (key,)).fetchone()
+    if n is None:
+        return False
+    out.print(f"[bold]Note N:{n['id']}[/bold] ({n['source']}, {_local(n['ts'], tz)})")
+    out.print(f"  {n['text']}", markup=False, soft_wrap=True)
+    if n["run_id"]:
+        out.print(f"  about run R:{n['run_id']}")
+    return True
 
 
 @app.command()

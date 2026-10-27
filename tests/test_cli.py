@@ -74,12 +74,10 @@ def test_status_on_empty_store(project):
     [
         ["sync", "cluster"],
         ["note", "why I changed the cutoff"],
-        ["entry", "today"],
         ["trace", "fig.png"],
         ["reproduce", "fig.png", "--yes"],
         ["ask", "what changed?"],
         ["report", "week"],
-        ["show", "01JABC"],
         ["serve"],
     ],
 )
@@ -191,3 +189,34 @@ def test_readset_setting(project, monkeypatch):
     assert config.readset_enabled(home) is False
     monkeypatch.setenv("CAIRN_READSET", "1")
     assert config.readset_enabled(home) is True
+
+
+def test_entry_dry_run_and_show(project, monkeypatch):
+    runner.invoke(app, ["init"])
+    events = project / ".cairn" / "events"
+    run = (
+        '{"v":1,"type":"cmd","id":"S-1","session":"S","host":"synth","shell":"bash",'
+        '"user":"tester","cwd":"/p","cmd":"python fit.py","ts_start":"2026-10-28T09:00:00.000Z",'
+        '"ts_end":"2026-10-28T09:00:01.000Z","exit":3}\n'
+    )
+    (events / "synth-2026-10-28.jsonl").write_text(run)
+    runner.invoke(app, ["ingest"])
+    cfg = project / ".cairn" / "config.toml"
+    cfg.write_text(cfg.read_text().replace('# timezone = "Asia/Kolkata"', 'timezone = "UTC"'))
+    result = runner.invoke(app, ["entry", "2026-10-28", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "$ python fit.py" in result.output and "exit 3" in result.output
+    import re
+
+    rid = re.search(r"\[R:([0-9A-Z]{26})\]", result.output).group(1)
+    shown = runner.invoke(app, ["show", f"R:{rid}"])
+    assert shown.exit_code == 0 and "python fit.py" in shown.output and "exit 3" in shown.output
+    assert runner.invoke(app, ["show", rid.lower()]).exit_code == 0
+    assert runner.invoke(app, ["show", "R:01ARZ3NDEKTSV4RRFFQ69G5FAV"]).exit_code == 1
+    assert runner.invoke(app, ["entry", "someday", "--dry-run"]).exit_code == 2
+
+
+def test_entry_without_api_key_fails_cleanly(project):
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["entry", "today"])
+    assert result.exit_code == 1 and "MODEL_API_KEY" in result.output
