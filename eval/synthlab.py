@@ -250,6 +250,8 @@ STEPS = [
 ]
 
 MUST_NOT_APPEAR = ["hidden-step-marker", "synthetic-not-a-real-key"]
+# Files the reproduce agent should regenerate and verify (all deterministic, all cheap).
+REPRODUCE_TARGETS = ["figs/fit2.png", "results/summary.txt", "sim.log", "results/fit.json"]
 IGNORED_PATHS = ["scratch.tmp", "__pycache__/junk.pyc"]
 
 
@@ -275,6 +277,7 @@ def answer_key() -> dict:
         "notes": notes,
         "param_changes": params,
         "must_not_appear": MUST_NOT_APPEAR,
+        "reproduce_targets": REPRODUCE_TARGETS,
         "ignored_paths": IGNORED_PATHS,
     }
 
@@ -329,14 +332,15 @@ def play(
     step_delay: float = 0.6,
     readset: bool = False,
     entry: bool = False,
+    reproduce: bool = False,
 ) -> dict:
     """Run every step through the real hook with ``cairn watch`` running; then ingest.
 
     With ``readset``, ingest asks Muse Spark which files each script reads and writes.
     With ``entry``, Muse Spark then writes and checks the day's notebook entry.
     """
-    env = _env(home, readset or entry)
-    if entry and not readset:
+    env = _env(home, readset or entry or reproduce)
+    if (entry or reproduce) and not readset:
         env["CAIRN_READSET"] = "0"
     home.mkdir(parents=True, exist_ok=True)
     subprocess.run(["cairn", "init"], cwd=project, env=env, check=True, capture_output=True)
@@ -387,6 +391,22 @@ def play(
             timeout=600,
         )
         info["entry"] = (res.stdout + res.stderr).strip()
+    if reproduce:
+        verdicts = {}
+        for target in REPRODUCE_TARGETS:
+            res = subprocess.run(
+                ["cairn", "reproduce", target, "--yes"],
+                cwd=project,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=900,
+            )
+            verdicts[target] = {0: "reproduced", 1: "not_reproduced"}.get(
+                res.returncode, "refused/inconclusive"
+            )
+        (project / "reproduce_results.json").write_text(json.dumps(verdicts, indent=1))
+        info["reproduce"] = verdicts
     return info
 
 
@@ -412,6 +432,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also write and check the day's entry with Muse Spark (a few cents).",
     )
+    ap.add_argument(
+        "--reproduce",
+        action="store_true",
+        help="Also ask the reproduce agent to regenerate and verify key outputs (~$0.15).",
+    )
     args = ap.parse_args(argv)
     t0 = time.perf_counter()
     base = args.keep or Path(tempfile.mkdtemp(prefix="synthlab-"))
@@ -419,7 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(base)
     project, home = base / "proj", base / "home"
     build(project)
-    info = play(project, home, readset=args.readset, entry=args.entry)
+    info = play(project, home, readset=args.readset, entry=args.entry, reproduce=args.reproduce)
     metrics = compute(project)
     metrics["readset"] = args.readset
     if args.readset or args.entry:

@@ -72,6 +72,12 @@ def compute(project: Path) -> dict:
     ).fetchone()
 
     edge_m = _edge_metrics(conn, pairs, root)
+    repro_file = project / "reproduce_results.json"
+    if repro_file.is_file():
+        verdicts = json.loads(repro_file.read_text())
+        ok_n = sum(v == "reproduced" for v in verdicts.values())
+        edge_m["reproduce_success"] = f"{ok_n}/{len(verdicts)}"
+        edge_m["reproduce_verdicts"] = verdicts
     run_of = {s["i"]: r["id"] for s, r in pairs}
     notes = dict(conn.execute("SELECT text, run_id FROM notes").fetchall())
     placed = [
