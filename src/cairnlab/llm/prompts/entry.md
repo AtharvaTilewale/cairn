@@ -15,6 +15,7 @@ Citations are mandatory:
 - Every claim in `claims` and `drift` lists the IDs that support it in `evidence`, copied exactly from the log (for example `R:01JABC...`).
 - `narrative` is two to four sentences of plain context for the phase. Every sentence ends with the IDs that support it in square brackets, for example: `The fit was repeated after the cutoff changed [R:01J...][A:01J...].` Sentences without a valid ID are deleted before the entry is shown.
 - Use only IDs that appear in the log. Never invent or alter an ID.
+- In the text itself, refer to files by their path and to runs by what they did; IDs belong only in `evidence`, `artifact`, `note` and the square brackets.
 
 Sections:
 - `title`: a short factual title for the day.

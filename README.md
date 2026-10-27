@@ -6,8 +6,8 @@ turn a day of raw events into a dated, provenance-linked notebook entry.
 
 Built for the Meta Global AI Developer Hackathon (Indie track, "Build for Your World").
 
-> Status: capture, snapshots, provenance linking and `cairn run` work; notebook
-> entries, trace and the reproduce agent are in progress.
+> Status: capture, snapshots, provenance linking, `cairn run` and daily entries work;
+> trace, notes, the weekly report and the reproduce agent are in progress.
 
 ## Install
 
@@ -62,11 +62,27 @@ the Meta Model API; set `readset = false` under `[link]` in `.cairn/config.toml`
 `CAIRN_READSET=0`) to keep scripts local. Model calls and their cost are logged to
 `.cairn/usage.jsonl`.
 
+## Notebook entries
+
+```bash
+cairn entry today            # or yesterday, or 2026-10-28
+cairn entry today --dry-run  # print exactly what would be sent; call nothing
+cairn show R:01J...          # any run, file version (A:) or note (N:) an entry cites
+```
+
+Muse Spark writes the day's entry from the recorded log and the day's figures (it
+reads the plots). Every claim must cite the run, file version or note it rests on;
+anything uncited, or citing an ID that is not in the log, is dropped before the entry
+is shown. A second pass splits the entry into atomic claims and checks each against
+the store (exit codes, commands, file names, parameter values, file contents), so each
+entry comes with a faithfulness score. Entries are saved to `.cairn/entries/`.
+
 ## Evaluation
 
 ```bash
 python -m eval.synthlab              # scripted fake project + answer key; prints metrics
 python -m eval.synthlab --readset    # also lets linking call Muse Spark (about $0.01)
+python -m eval.synthlab --readset --entry   # and writes + checks the entry (about $0.09)
 ```
 
 Commands starting with a space are not recorded when `HISTCONTROL` includes
