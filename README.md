@@ -97,7 +97,7 @@ hook adds about 1.3 ms per recorded command.
 Python 3.11+ on Linux with bash (5.x; written for 4.2+).
 
 ```bash
-git clone <this repository> && cd cairn
+git clone https://github.com/AtharvaTilewale/cairn && cd cairn
 pip install -e ".[dev]"          # add ,voice for voice notes (needs libportaudio2)
 cp .env.example .env             # put your MODEL_API_KEY in .env
 ```
