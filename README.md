@@ -1,19 +1,105 @@
 # Cairn — the lab notebook that writes itself
 
-Cairn records what you ran in the terminal (commands, exit codes, working
-directory, timing), lets you pin a note on *why*, and uses Meta's Muse Spark to
-turn a day of raw events into a dated, provenance-linked notebook entry.
+Computational researchers lose the *why* behind their runs. Which parameter file made
+that figure? Which version of the script? Why was the cutoff changed on Tuesday?
+Cairn answers from a record instead of memory:
 
-Built for the Meta Global AI Developer Hackathon (Indie track, "Build for Your World").
+- **It records what you ran**: every command in an opted-in terminal (exit code, timing,
+  directory, conda env, git commit), every changed file (SHA-256, with old versions
+  kept), and long jobs running in the background.
+- **You add the why**: a typed or spoken note, pinned to the run it explains.
+- **Meta's models write it up**: Muse Spark turns the day into a dated notebook entry
+  where every claim cites the run, file or note it rests on, and it reads your figures.
+- **It proves it**: `cairn trace fig.png` gives the exact chain that produced a file;
+  `cairn reproduce fig.png` re-runs the cheap final steps in a scratch directory and
+  checks that the output matches, byte for byte.
 
-> Status: capture, snapshots, provenance, `cairn run`, notes (typed and voice), trace,
-> multi-machine sync, daily entries, ask, the reproduce agent, the weekly report and
-> private mode (Muse Glimmer) work; Glimmer has not yet been run on real weights.
+Built for the Meta Global AI Developer Hackathon (Indie track, "Build for Your World")
+by an MSc computational biology student, for the kind of work in the author's own
+dissertation: GROMACS molecular dynamics, bioinformatics pipelines, many small
+analysis scripts across a desktop, a GPU workstation and a cluster.
+
+## How Cairn uses Meta's models
+
+| Model | What it does in Cairn |
+|---|---|
+| `muse-spark-1.3` (Meta Model API) | Writes the **daily entry** from the day's log and figures (vision), strict JSON schema, every claim cited · **splits the entry into checkable claims** for the faithfulness check · **readset**: reads each new script version and lists the files it opens · **reproduce agent**: tool calling, plans which recorded steps to re-run, executes after approval, verifies · **ask**: tool calling over the store, cited answers · **weekly report** for a supervisor |
+| `muse-voice-transcribe-1.0` | **Voice notes**: push-to-talk from a keyboard shortcut, pinned to the last run |
+| **Muse Glimmer** (open weights, self-hosted) | **Private mode**: the same entry and check pipeline on your own hardware via llama.cpp, so nothing leaves your machines |
+
+The model never has the last word on facts. Entry claims must cite IDs that exist in
+the record (anything else is deleted before you see it), the faithfulness check is
+verified by code against the store, and reproduction verdicts come from comparing
+files, not from the model.
+
+## How it works
+
+```
+ bash hook (opt-in) ─┐                      ┌─> cairn entry   (Muse Spark / Glimmer)
+ cairn watch ────────┼─> events/*.jsonl ─> ingest ─> SQLite: runs · file versions ·
+ cairn run [--bg] ───┤   (append-only,        edges (used / generated) · notes
+ cairn note ─────────┘    per machine)          │       └─> cairn ask · report week
+ other machines ── cairn sync (rsync/SSH) ──────┘
+                                    cairn trace <file> ──> cairn reproduce <file>
+```
+
+Provenance is W3C PROV in miniature: runs are activities, file versions are entities,
+and each edge records how it was inferred (command-line paths, the time window, the
+exact before/after diff of `cairn run`, files a background job held open, or readset)
+with a confidence.
+
+## Results
+
+Measured on synthetic projects only; no real research data is used for evaluation.
+`synthlab` is a scripted project with an answer key, used during development; the
+**held-out** scenario was written afterwards and is never tuned on
+([`eval/heldout/RESULTS.md`](eval/heldout/RESULTS.md) records every run, starting
+from the first blind one).
+
+| | synthlab | held-out |
+|---|---|---|
+| Commands captured (recall / precision) | 27/27 (1.0 / 1.0) | 22/22 (1.0 / 1.0) |
+| Exit codes, working directories | all correct | all correct |
+| Seeded faults flagged; secrets or hidden commands leaked | 4/4; none | 4/4; none |
+| Notes pinned to the right run | 2/2 | 1/2 blind, 2/2 after the fix |
+| Provenance edges, precision / recall (readset on) | 1.0 / 1.0 | 1.0 / 1.0 |
+| Entry claims supported / unsupported / unverifiable | 29 / 0 / 4 | 25 / 0 / 2 |
+| Uncited items dropped from the entry | 0 | 0 |
+| Files reproduced by the agent | 4/4 | 3/4 |
+
+Costs on the Meta Model API: a daily entry about $0.035 plus $0.043 for its
+faithfulness check; a reproduction $0.02–0.04; a question $0.02; a weekly report
+$0.015; readset about $0.002 per script version; voice $0.18 per audio hour. The shell
+hook adds about 1.3 ms per recorded command.
+
+## Privacy and safety
+
+- **Opt-in, per terminal.** Nothing is recorded until you run `eval "$(cairn activate)"`;
+  the prompt shows `[cairn]` while it is on. Cairn never edits `~/.bashrc` or any
+  dotfile, which makes it safe on a shared account.
+- **Secrets.** Commands that look like they carry credentials (`*KEY*=`, `*TOKEN*`,
+  `*PASSWORD*`, `*SECRET*`) are stored as `[redacted]`; with `HISTCONTROL` including
+  `ignorespace` (Ubuntu's default), a command typed with a leading space is not
+  recorded at all. API keys come from the environment or `.env` and
+  are never logged.
+- **What leaves your machine.** Entries send the day's commands, small text outputs
+  and figures to the Meta Model API; readset sends script source (turn it off with
+  `readset = false` under `[link]` in `.cairn/config.toml`). Private mode sends
+  nothing outside your own hardware. The contributor tier, which lets Meta train on
+  inputs, is refused by the client.
+- **Reproduce is not a security sandbox.** It replays only recorded commands, only
+  after you approve the plan, only steps that originally took under 10 minutes, in a
+  scratch directory with API keys removed and paths redirected away from your real
+  files; but the commands still run as you.
 
 ## Install
 
+Python 3.11+ on Linux with bash (5.x; written for 4.2+).
+
 ```bash
-pip install -e ".[dev]"
+git clone <this repository> && cd cairn
+pip install -e ".[dev]"          # add ,voice for voice notes (needs libportaudio2)
+cp .env.example .env             # put your MODEL_API_KEY in .env
 ```
 
 ## Quick start
@@ -237,8 +323,18 @@ Commands starting with a space are not recorded when `HISTCONTROL` includes
 `ignorespace` (Ubuntu's default). Commands that look like they carry secrets
 (`*KEY*=`, `*TOKEN*`, `*PASSWORD*`, `*SECRET*`) are stored as `[redacted]`.
 
-Results so far (synthetic data only): see `eval/heldout/RESULTS.md` for the held-out
-scenario, recorded from its first blind run.
+## Limitations
+
+- Linux and bash only. zsh, fish and Windows are not supported.
+- Re-runs use today's interpreter and packages, not the recorded environment; a
+  changed package shows up as a `different` comparison rather than an explicit
+  environment error.
+- Git commit and branch are reconstructed from the reflog for runs on the machine
+  that ingests them; runs synced from other machines carry no git snapshot yet.
+- SVG and PDF figures are not shown to the model (only raster formats).
+- The realtime voice WebSocket is not used (its handshake is undocumented); voice
+  notes go through the file endpoint, which suits push-to-talk.
+- HPC (SGE) job capture is designed but not built.
 
 ## License
 
