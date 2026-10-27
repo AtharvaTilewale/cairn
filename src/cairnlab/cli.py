@@ -818,6 +818,9 @@ def reproduce(
     at: Annotated[str | None, typer.Option(help="The version current at this time.")] = None,
     sha: Annotated[str | None, typer.Option(help="The version with this hash prefix.")] = None,
     rel_tol: Annotated[float, typer.Option(help="Tolerance for numbers.")] = 1e-6,
+    keep_scratch: Annotated[
+        bool, typer.Option("--keep-scratch", help="Keep the scratch directories afterwards.")
+    ] = False,
 ) -> None:
     """Re-run the cheap final steps for a file in a scratch directory and check the result.
 
@@ -851,6 +854,9 @@ def reproduce(
     usage = home / "usage.jsonl"
     before = usage.stat().st_size if usage.is_file() else 0
     err.print(f"Asking {client.model} to plan a reproduction of {path}...")
+    # Inside .cairn/, which the watcher never records, so replays are not mistaken for work.
+    scratch = home / "scratch"
+    scratch.mkdir(exist_ok=True)
     agent = ReproduceAgent(
         client,
         conn,
@@ -859,6 +865,7 @@ def reproduce(
         confirm,
         say=lambda m: err.print(m, soft_wrap=True),
         rel_tol=rel_tol,
+        scratch_parent=scratch,
     )
     try:
         report = agent.run()
@@ -879,6 +886,9 @@ def reproduce(
         )
     if report.explanation:
         out.print(report.explanation, soft_wrap=True)
+    if not keep_scratch:
+        for r in report.replays:
+            shutil.rmtree(r["scratch"], ignore_errors=True)
     out_dir = home / "reproductions"
     out_dir.mkdir(exist_ok=True)
     saved = out_dir / f"{ULID()}.json"

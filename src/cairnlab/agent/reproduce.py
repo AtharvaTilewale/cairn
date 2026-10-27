@@ -308,7 +308,14 @@ class ReproduceAgent:
         """The directory shared by the target and the run: where helper files would be."""
         return os.path.commonpath([run["cwd"] or "/", self.trace.nodes[self.target].path])
 
-    def tool_propose_plan(self, summary: str, steps: list[dict]) -> dict:
+    def tool_propose_plan(self, summary: str = "", steps: list[dict] | str | None = None) -> dict:
+        # Tolerate a JSON string or a missing field: a malformed call must not lose the plan.
+        if isinstance(steps, str):
+            try:
+                steps = json.loads(steps)
+            except ValueError:
+                steps = []
+        steps = [st for st in (steps or []) if isinstance(st, dict)]
         accepted, rejected = [], []
         for raw in steps:
             run = self._run(str(raw.get("run_id", "")))
@@ -443,10 +450,21 @@ class ReproduceAgent:
                 break
             if self.plan is not None and self.calls - self.plan_calls >= MAX_TOOL_CALLS:
                 break
+            offered = tools
+            if self.plan is None and self.plan_calls >= MAX_PLAN_CALLS - 4:
+                # Planning budget nearly spent: the only move left is to propose a plan.
+                offered = [PLAN_TOOLS[-1]]
+                messages.append({"role": "user", "content": "Propose the plan now."})
             msg = self.client.complete(
-                purpose="reproduce", messages=messages, tools=tools, reasoning_effort="high"
+                purpose="reproduce", messages=messages, tools=offered, reasoning_effort="high"
             )
             calls = list(getattr(msg, "tool_calls", None) or [])
+            log.info(
+                "reproduce turn (offered %s): %s",
+                [t["function"]["name"] for t in offered],
+                [(c.function.name, (c.function.arguments or "")[:200]) for c in calls]
+                or (msg.content or "")[:200],
+            )
             messages.append(_assistant(msg, calls))
             if not calls:
                 if self.plan is not None and (not self.approved or self.checks):
@@ -469,7 +487,7 @@ class ReproduceAgent:
                     args = json.loads(call.function.arguments or "{}")
                 except ValueError:
                     args = {}
-                allowed = {t["function"]["name"] for t in tools}
+                allowed = {t["function"]["name"] for t in offered}
                 if name not in allowed:
                     result = {"error": f"{name} is not available now"}
                 else:

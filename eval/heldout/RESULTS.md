@@ -27,3 +27,27 @@ started, and notes were pinned to the latest *started* run. Fixed in the next co
 (a note now explains the last run that *finished* before it). Later runs are no
 longer blind for note placement; every other metric still is, as nothing else was
 changed in response to this run.
+
+## Run 2, 2026-10-27, with models (readset, entry, reproduce)
+
+`python -m eval.synthlab --scenario heldout --readset --entry --reproduce`, after the
+note fix above. Blind for every prompt (entry, claims, readset, reproduce).
+
+| metric | value |
+|---|---|
+| runs, exit codes, cwds, fault flags, leaks | 22/22, 22/22, 22/22, 4/4, none |
+| notes placed | 2/2 |
+| edge precision / recall (readset found both code-only inputs) | 1.0 / 1.0 |
+| entry: claims supported / unsupported / unverifiable, dropped | 25 / 0 / 2, 0 |
+| entry: parameter changes reported, failed runs cited | 2/2, 2/2 |
+| reproduce: targets verified | **3/4** |
+| model cost, wall time | $0.20, 151 s |
+
+The miss: for `out/report.md` the agent spent its 12 planning calls reading files
+and never proposed a plan (verdict inconclusive). Re-running it alone the agent
+planned the single `make_report.py` step and reproduced `report.md` byte-identically,
+so this is run-to-run variance in a long plan. Two loop fixes followed (not prompt
+changes): the last planning turn now offers only `propose_plan`, and `propose_plan`
+accepts a malformed `steps` argument instead of losing the plan. Also found: replay
+scratch directories fell back to the project directory when `TMPDIR` was unset; they
+now live in `.cairn/scratch/` (never recorded) and are deleted afterwards.

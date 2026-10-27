@@ -220,6 +220,8 @@ def test_tool_call_budget(tmp_path):
     agent, _ = agent_for(s, "total.txt", client, tmp_path=tmp_path)
     report = agent.run()
     assert report.tool_calls == MAX_PLAN_CALLS and report.verdict == "inconclusive"
+    # Near the end of the planning budget only propose_plan is offered.
+    assert client.seen[-1]["tools"] == ["propose_plan"]
 
 
 def test_verdicts():
@@ -263,3 +265,13 @@ def test_extra_inputs_must_be_files_that_existed(tmp_path):
         "x", [{"run_id": final, "check": [], "why": "w", "extra_inputs": [later]}]
     )
     assert res["approved"] is False and "list_files" in agent.plan.rejected[0]
+
+
+def test_propose_plan_tolerates_malformed_arguments(tmp_path):
+    s = make_store(tmp_path)
+    vid = resolve_version(s.conn, "hp", f"{ROOT}/total.txt")
+    agent = ReproduceAgent(None, s.conn, s.objects, vid, lambda p: True)
+    final = agent.trace.steps[-1].run["id"]
+    res = agent.tool_propose_plan(steps=json.dumps([{"run_id": final, "check": [], "why": "w"}]))
+    assert res["approved"] is True and agent.plan.steps[0].run_id == final
+    assert agent.tool_propose_plan()["approved"] is False
