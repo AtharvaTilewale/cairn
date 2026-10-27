@@ -20,6 +20,8 @@ dependencies = [
   "openai",
   "watchdog",
   "pathspec",
+  "jinja2",
+  "pillow",
 ]
 
 [project.optional-dependencies]
