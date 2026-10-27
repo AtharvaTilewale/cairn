@@ -359,3 +359,40 @@ def test_done_when_scenario(tmp_path):
     conn = sqlite3.connect(s.cwd / ".cairn" / "cairn.db")
     rows = conn.execute("SELECT cmd, exit FROM runs ORDER BY ts_start").fetchall()
     assert rows == [("echo hi", 0), ("false", 1)]
+
+
+def test_cairn_watch_process(tmp_path):
+    """`cairn watch` as a real process: baseline scan, live events, clean SIGTERM."""
+    import signal
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    env = {
+        "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(tmp_path / "home"),
+        "CAIRN_USER": "tester",
+        "CAIRN_HOST": "synth",
+    }
+    subprocess.run(["cairn", "init"], cwd=proj, env=env, check=True, capture_output=True)
+    (proj / "before.txt").write_text("existed before the watcher")
+    proc = subprocess.Popen(
+        ["cairn", "watch"], cwd=proj, env=env, stderr=subprocess.PIPE, text=True
+    )
+    try:
+        for line in proc.stderr:
+            if line.startswith("Watching"):
+                break
+        (proj / "fig.png").write_bytes(b"\x89PNG fake")
+        time.sleep(1.5)
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=20)
+    assert proc.returncode == 0
+    events = [
+        json.loads(x)
+        for f in (proj / ".cairn" / "events").glob("*-watch.jsonl")
+        for x in f.read_text().splitlines()
+    ]
+    by_name = {Path(e["path"]).name: e["op"] for e in events}
+    assert by_name["before.txt"] == "scanned"
+    assert by_name["fig.png"] == "created"

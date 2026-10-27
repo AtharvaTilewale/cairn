@@ -5,6 +5,7 @@ variable, or the nearest ``.cairn/`` directory at or above the current directory
 """
 
 import os
+import socket
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,26 @@ def find_home(start: Path | None = None) -> Path | None:
     return None
 
 
+def local_host() -> str:
+    """This machine's host name as stored in events: $CAIRN_HOST, else the short name.
+
+    Matches the bash hook, which uses ``${CAIRN_HOST:-${HOSTNAME%%.*}}``.
+    """
+    return os.environ.get("CAIRN_HOST") or socket.gethostname().split(".")[0]
+
+
+def is_eddie() -> bool:
+    """True on the an HPC cluster, where no daemons may run."""
+    if os.environ.get("CAIRN_NO_DAEMON"):
+        return True
+    return socket.getfqdn().endswith(".cluster.example.org")
+
+
+def project_root(home: Path) -> Path | None:
+    """The project directory a store belongs to (``<project>/.cairn``), if any."""
+    return home.parent if home.name == CAIRN_DIR else None
+
+
 def db_path(home: Path) -> Path:
     """Path of the SQLite database inside a store."""
     return home / "cairn.db"
@@ -48,6 +69,16 @@ def db_path(home: Path) -> Path:
 def events_dir(home: Path) -> Path:
     """Directory the shell hook appends JSONL events to."""
     return home / "events"
+
+
+def objects_dir(home: Path) -> Path:
+    """Content-addressed copies of small files."""
+    return home / "objects"
+
+
+def state_dir(home: Path) -> Path:
+    """Small bookkeeping files (watcher state), never synced."""
+    return home / "state"
 
 
 def load_config(home: Path) -> dict[str, Any]:

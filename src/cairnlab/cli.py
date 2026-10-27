@@ -1,7 +1,12 @@
 """Cairn command-line interface: one sub-command per feature."""
 
 import logging
+import os
+import re
+import signal
 import sys
+import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -14,8 +19,10 @@ from ulid import ULID
 from cairnlab import config
 from cairnlab.capture.hooks import activation_script, deactivation_script
 from cairnlab.capture.ingest import ingest as ingest_events
+from cairnlab.capture.watcher import EventWriter, FileTracker, IgnoreRules
+from cairnlab.capture.watcher import watch as watch_files
 from cairnlab.store import db, repo
-from cairnlab.store.models import utc_now
+from cairnlab.store.models import normalize_ts, utc_now
 
 app = typer.Typer(
     help="Cairn: the lab notebook that writes itself.",
@@ -185,18 +192,106 @@ def ingest() -> None:
 # --- not implemented yet -----------------------------------------------------------------
 
 
+RootOpt = Annotated[
+    list[Path] | None,
+    typer.Option("--root", help="Directory to cover (repeatable). Default: the project."),
+]
+
+
+def _file_tracker(home: Path, roots: RootOpt) -> tuple[FileTracker, list[Path]]:
+    user = os.environ.get("CAIRN_USER", "")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", user):
+        err.print("[red]Set CAIRN_USER[/red] (letters, digits, '.', '_', '-') first.")
+        raise typer.Exit(1)
+    if roots:
+        roots = [r.expanduser().resolve() for r in roots]
+    else:
+        project = config.project_root(home)
+        if project is None:
+            err.print("[red]This store is not inside a project;[/red] pass --root DIR.")
+            raise typer.Exit(2)
+        roots = [project]
+    host = config.local_host()
+    tracker = FileTracker(
+        rules=IgnoreRules(roots[0]) if len(roots) == 1 else _MultiRootRules(roots),
+        writer=EventWriter(config.events_dir(home), host=host, user=user),
+        objects_dir=config.objects_dir(home),
+        state_path=config.state_dir(home) / f"files-{host}.json",
+    )
+    return tracker, roots
+
+
+class _MultiRootRules:
+    """Ignore rules for several roots: each path uses the rules of the root it is under."""
+
+    def __init__(self, roots: list[Path]):
+        self.by_root = [IgnoreRules(r) for r in roots]
+
+    def ignored(self, path: Path, is_dir: bool = False) -> bool:
+        for rules in self.by_root:
+            if path.is_relative_to(rules.root):
+                return rules.ignored(path, is_dir)
+        return True
+
+
 @app.command()
-def watch() -> None:
-    """Run the file watcher (HP, workstation; never the cluster)."""
-    _todo("watch")
+def watch(root: RootOpt = None) -> None:
+    """Run the file watcher in the foreground (HP, workstation; never the cluster). Ctrl-C stops."""
+    if config.is_eddie():
+        err.print("[red]cairn watch never runs on the cluster[/red] (no daemons on login nodes).")
+        err.print("Use [bold]cairn scan[/bold]; [bold]cairn sync cluster[/bold] runs it for you.")
+        raise typer.Exit(2)
+    home = _require_home()
+    tracker, roots = _file_tracker(home, root)
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+
+    def ready(n: int) -> None:
+        err.print(f"Baseline: {n} new or changed files fingerprinted.")
+        err.print(f"Watching {', '.join(map(str, roots))}  (Ctrl-C to stop)")
+
+    err.print("Scanning for changes made while nothing was watching...")
+    worker = threading.Thread(
+        target=watch_files,
+        args=(tracker, roots, stop),
+        kwargs={"baseline": True, "on_ready": ready},
+        daemon=True,
+    )
+    worker.start()
+    try:
+        while worker.is_alive():
+            worker.join(0.5)
+    except KeyboardInterrupt:
+        pass
+    stop.set()
+    worker.join(timeout=15)
+    err.print("Watcher stopped.")
 
 
 @app.command()
 def scan(
-    since: Annotated[str | None, typer.Option(help="Only files changed after this time.")] = None,
+    since: Annotated[
+        str | None, typer.Option(help="Only files modified after this ISO-8601 time.")
+    ] = None,
+    root: RootOpt = None,
 ) -> None:
-    """One-shot fingerprint pass (used on the cluster by sync)."""
-    _todo("scan")
+    """One-shot fingerprint pass that exits immediately (used on the cluster by sync)."""
+    # A spoke (the cluster) has a store directory for events but no database.
+    home = config.find_home()
+    if home is None:
+        err.print("[red]No Cairn store:[/red] set CAIRN_HOME or run [bold]cairn init[/bold].")
+        raise typer.Exit(1)
+    tracker, roots = _file_tracker(home, root)
+    since_epoch = None
+    if since:
+        try:
+            since_epoch = datetime.fromisoformat(normalize_ts(since)).timestamp()
+        except ValueError:
+            err.print(f"[red]Bad --since:[/red] {since!r} (use e.g. 2026-10-28T09:00:00Z)")
+            raise typer.Exit(2) from None
+    n = sum(tracker.scan(r, since=since_epoch) for r in roots)
+    tracker.save_state()
+    out.print(f"Scanned {', '.join(map(str, roots))}: {n} file events written.")
 
 
 @app.command()

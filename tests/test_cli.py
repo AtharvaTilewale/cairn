@@ -71,8 +71,6 @@ def test_status_on_empty_store(project):
 @pytest.mark.parametrize(
     "args",
     [
-        ["watch"],
-        ["scan", "--since", "2026-10-27T00:00:00Z"],
         ["sync", "cluster"],
         ["run", "--", "python", "fit.py"],
         ["run", "--bg", "--", "sleep", "1"],
@@ -142,3 +140,41 @@ def test_ingest_then_status(project):
 
 def test_ingest_without_store(project):
     assert runner.invoke(app, ["ingest"]).exit_code == 1
+
+
+def test_scan_writes_file_events(project, monkeypatch):
+    runner.invoke(app, ["init"])
+    (project / "data.csv").write_text("1,2\n")
+    (project / "__pycache__").mkdir()
+    (project / "__pycache__" / "m.pyc").write_bytes(b"x")
+    monkeypatch.setenv("CAIRN_USER", "tester")
+    monkeypatch.setenv("CAIRN_HOST", "synth")
+    result = runner.invoke(app, ["scan"])
+    assert result.exit_code == 0, result.output
+    # data.csv and .cairnignore; never .cairn/ or __pycache__/
+    assert "2 file events" in result.output
+    assert "0 file events" in runner.invoke(app, ["scan"]).output
+    files = list((project / ".cairn" / "events").glob("synth-*-watch.jsonl"))
+    assert len(files) == 1
+    result = runner.invoke(app, ["scan", "--since", "2999-01-01T00:00:00Z"])
+    assert "0 file events" in result.output
+
+
+def test_scan_requires_cairn_user(project):
+    runner.invoke(app, ["init"])
+    assert runner.invoke(app, ["scan"]).exit_code == 1
+
+
+def test_scan_rejects_bad_since(project, monkeypatch):
+    runner.invoke(app, ["init"])
+    monkeypatch.setenv("CAIRN_USER", "tester")
+    assert runner.invoke(app, ["scan", "--since", "yesterday"]).exit_code == 2
+
+
+def test_watch_refuses_on_eddie(project, monkeypatch):
+    runner.invoke(app, ["init"])
+    monkeypatch.setenv("CAIRN_USER", "tester")
+    monkeypatch.setenv("CAIRN_NO_DAEMON", "1")
+    result = runner.invoke(app, ["watch"])
+    assert result.exit_code == 2
+    assert "never runs on the cluster" in result.output
