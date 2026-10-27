@@ -18,10 +18,14 @@ dependencies = [
   "python-ulid",
   "python-dotenv",
   "openai",
+  "watchdog",
+  "pathspec",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+# synthlab drives a fake numpy/matplotlib project; Cairn itself does not need these.
+eval = ["numpy", "matplotlib"]
+dev = ["pytest", "ruff", "numpy", "matplotlib"]
 
 [project.scripts]
 cairn = "cairnlab.cli:app"
