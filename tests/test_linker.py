@@ -392,3 +392,20 @@ def test_back_to_back_runs_are_not_ambiguous(store):
         cmd("python next.py", 10.6, 11),
     )
     assert conf(conn, "sed -i s/a/b/ p.txt", "p.txt", "generated") == 0.7
+
+
+def test_background_job_started_just_after_the_writer_does_not_claim_its_output(store):
+    """The --bg monitor records its start ~10 ms after the user's next command began."""
+    from ulid import ULID
+
+    conn, load = store
+    rid = str(ULID())
+    load(
+        cmd("python summarize.py", 10.662, 10.679),
+        bg_start("python simulate.py", 10.671, rid),
+        fev("summary.txt", 10.676, "a", "created"),
+        fev("sim.log", 12.5, "b", "created"),
+        bg_end(rid, 12.794, ["summary.txt", "sim.log"], ["sim.log"]),
+    )
+    assert ("generated", "summary.txt", "a", "window") in edges(conn, "python summarize.py")
+    assert not any(p == "summary.txt" for _, p, _, _ in edges(conn, "python simulate.py"))

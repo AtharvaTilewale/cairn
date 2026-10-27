@@ -4,7 +4,7 @@ Methods, applied in this order (an edge found by an earlier method is kept):
 
 1. **wrapper (1.0):** ``cairn run`` diffed the tree before and after, so its
    ``generated`` list is exact when nothing else ran meanwhile (0.8 otherwise). A
-   change inside a later, nested run's window belongs to that run. For ``--bg`` jobs,
+   change inside another overlapping run's window belongs to that run. For ``--bg`` jobs,
    files the job was seen holding open for writing are its outputs (1.0); other
    changes count only under its ``cwd`` (0.6). Inputs come from the methods below.
 2. **argpath (0.9):** command tokens that resolve (from ``cwd``, following ``cd``
@@ -295,10 +295,12 @@ def _link_run(conn, run, reader: Reader | None, stats: LinkStats) -> None:
         # The tree diff also sees writes by other commands that ran meanwhile (a
         # background run lasts hours): a change inside a later, nested run's window is
         # that run's, and any overlap makes this run's claim less than certain.
+        # Every other run whose time overlaps this one (a background job's monitor can
+        # record its start just after the next command began, so start order is no guide).
         others = conn.execute(
-            "SELECT ts_start, ts_end FROM runs WHERE host = ? AND id != ? AND ts_start > ?"
-            " AND ts_start <= ?",
-            (host, run_id, start, end),
+            "SELECT ts_start, ts_end FROM runs WHERE host = ? AND id != ? AND ts_start <= ?"
+            " AND COALESCE(ts_end, ts_start) >= ?",
+            (host, run_id, end, start),
         ).fetchall()
         background = run["etype"] == "run_start"
         written = set(wrapper.get("written", []))
