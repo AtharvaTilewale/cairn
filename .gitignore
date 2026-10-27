@@ -1,0 +1,22 @@
+# secrets
+.env
+
+# Cairn data: real research data never enters git
+.cairn/
+.cairn-*/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# editors / local tooling
+.idea/
+.vscode/
+.claude/
+*.swp
