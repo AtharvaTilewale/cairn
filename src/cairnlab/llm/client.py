@@ -129,7 +129,8 @@ class Client:
                 base_url=META_BASE_URL, api_key=key, max_retries=0, timeout=REQUEST_TIMEOUT_S
             )
         else:
-            url = os.environ.get("CAIRN_GLIMMER_BASE_URL", GLIMMER_DEFAULT_URL)
+            load_env()
+            url = os.environ.get("CAIRN_GLIMMER_BASE_URL") or GLIMMER_DEFAULT_URL
             # Glimmer on a partially offloaded GPU is slow: allow long generations.
             self._oai = openai.OpenAI(
                 base_url=url, api_key="not-needed", max_retries=0, timeout=GLIMMER_TIMEOUT_S

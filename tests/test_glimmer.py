@@ -228,3 +228,18 @@ def test_cli_queue_with_glimmer(stub, tmp_path, monkeypatch):
     assert "already has an entry" in again.output
     status = runner.invoke(app, ["status"]).output
     assert "muse-glimmer" in status and "tokens/s" in status
+
+
+def test_glimmer_url_from_user_env_file_and_empty_means_default(tmp_path, monkeypatch):
+    from cairnlab.llm.client import GLIMMER_DEFAULT_URL
+
+    monkeypatch.delenv("CAIRN_GLIMMER_BASE_URL", raising=False)
+    monkeypatch.chdir(tmp_path)
+    env = Path.home() / ".config" / "cairn" / "env"
+    env.parent.mkdir(parents=True)
+    env.write_text("CAIRN_GLIMMER_BASE_URL=\n")
+    assert str(Client(backend="glimmer")._oai.base_url).rstrip("/") == GLIMMER_DEFAULT_URL
+    monkeypatch.delenv("CAIRN_GLIMMER_BASE_URL", raising=False)
+    env.write_text("CAIRN_GLIMMER_BASE_URL=http://127.0.0.1:9999/v1\n")
+    assert str(Client(backend="glimmer")._oai.base_url).rstrip("/") == "http://127.0.0.1:9999/v1"
+    monkeypatch.delenv("CAIRN_GLIMMER_BASE_URL", raising=False)
