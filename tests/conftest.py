@@ -13,6 +13,8 @@ def isolated_env(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     # Tests never call a model API.
     monkeypatch.setenv("CAIRN_READSET", "0")
+    # Wide console so long temp paths (e.g. /tmp/pytest-of-<user>/...) never wrap output.
+    monkeypatch.setenv("COLUMNS", "200")
     return home
 
 
