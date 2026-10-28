@@ -89,6 +89,15 @@ def _require_home() -> Path:
     return home
 
 
+def _require_store() -> Path:
+    """The store to append events to. Spokes (workstation, the cluster) have no database."""
+    home = config.find_home()
+    if home is None or not home.is_dir():
+        err.print("[red]No Cairn store:[/red] set CAIRN_HOME or run [bold]cairn init[/bold].")
+        raise typer.Exit(1)
+    return home
+
+
 # --- implemented -------------------------------------------------------------------------
 
 
@@ -345,7 +354,7 @@ def watch(root: RootOpt = None) -> None:
         err.print("[red]cairn watch never runs on the cluster[/red] (no daemons on login nodes).")
         err.print("Use [bold]cairn scan[/bold]; [bold]cairn sync cluster[/bold] runs it for you.")
         raise typer.Exit(2)
-    home = _require_home()
+    home = _require_store()
     tracker, roots = _file_tracker(home, root)
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
@@ -380,11 +389,7 @@ def scan(
     root: RootOpt = None,
 ) -> None:
     """One-shot fingerprint pass that exits immediately (used on the cluster by sync)."""
-    # A spoke (the cluster) has a store directory for events but no database.
-    home = config.find_home()
-    if home is None:
-        err.print("[red]No Cairn store:[/red] set CAIRN_HOME or run [bold]cairn init[/bold].")
-        raise typer.Exit(1)
+    home = _require_store()
     tracker, roots = _file_tracker(home, root)
     since_epoch = None
     if since:

@@ -171,6 +171,31 @@ def test_watch_refuses_on_eddie(project, monkeypatch):
     assert "never runs on the cluster" in result.output
 
 
+def test_watch_and_scan_work_in_a_spoke_store(project, tmp_path, monkeypatch):
+    # The workstation store (~/.cairn-<user>) has events and objects but no database.
+    from cairnlab import cli
+
+    store = tmp_path / ".cairn-tester"
+    store.mkdir()
+    (project / "data.csv").write_text("1,2\n")
+    monkeypatch.setenv("CAIRN_HOME", str(store))
+    monkeypatch.setenv("CAIRN_USER", "tester")
+    monkeypatch.setenv("CAIRN_HOST", "ws")
+    # Without --root a spoke store has no project to watch.
+    assert runner.invoke(app, ["watch"]).exit_code == 2
+    seen = []
+    monkeypatch.setattr(cli, "watch_files", lambda tracker, roots, stop, **kw: seen.extend(roots))
+    result = runner.invoke(app, ["watch", "--root", str(project)])
+    assert result.exit_code == 0, result.output
+    assert seen == [project.resolve()]
+    result = runner.invoke(app, ["scan", "--root", str(project)])
+    assert "1 file events" in result.output
+    assert list((store / "events").glob("ws-*-watch.jsonl"))
+    assert not (store / "cairn.db").exists()
+    monkeypatch.setenv("CAIRN_HOME", str(tmp_path / "missing"))
+    assert runner.invoke(app, ["watch", "--root", str(project)]).exit_code == 1
+
+
 def test_readset_setting(project, monkeypatch):
     from cairnlab import config
 
