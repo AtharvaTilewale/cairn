@@ -19,7 +19,8 @@ Methods, applied in this order (an edge found by an earlier method is kept):
 4. **readset (0.6):** files a script reads/writes according to Muse Spark
    (``provenance/readset.py``), when a reader is supplied.
 
-``used`` always points at the version current at ``ts_start``; ``generated`` at the
+``used`` always points at the version current at ``ts_start`` (file times are read
+with ``CLOCK_SLACK`` for the kernel's coarse clock); ``generated`` at the
 latest version seen in the run's window. Linking is deterministic and idempotent:
 a run's edges are recomputed from the store each time it is linked.
 """
@@ -38,6 +39,9 @@ from cairnlab.store.models import format_ts
 log = logging.getLogger(__name__)
 
 GRACE = timedelta(seconds=2)
+# File times come from the kernel's coarse clock, which lags the real clock by up to a
+# tick (1-10 ms): an output written as a command starts can be stamped just before it.
+CLOCK_SLACK = timedelta(milliseconds=20)
 CONFIDENCE = {
     "wrapper": 1.0,
     "wrapper_shared": 0.8,  # other runs overlapped the wrapped one
@@ -286,6 +290,7 @@ def _add(conn, stats, run_id, version_id, role, method, confidence) -> None:
 def _link_run(conn, run, reader: Reader | None, stats: LinkStats) -> None:
     run_id, host, cwd = run["id"], run["host"], run["cwd"] or "/"
     start = run["ts_start"]
+    fstart = _plus(start, -CLOCK_SLACK)  # compared with file times only
     end = _window_end(conn, run)
     conn.execute("DELETE FROM edges WHERE run_id = ?", (run_id,))
 
@@ -308,7 +313,7 @@ def _link_run(conn, run, reader: Reader | None, stats: LinkStats) -> None:
         shared = CONFIDENCE["wrapper"] if not others else CONFIDENCE["wrapper_shared"]
         for path in wrapper.get("generated", []):
             art = _artifact(conn, host, path)
-            hit = _window_change(conn, art, start, end) if art else None
+            hit = _window_change(conn, art, fstart, end) if art else None
             if hit is None:
                 continue
             v, t = hit
@@ -333,13 +338,13 @@ def _link_run(conn, run, reader: Reader | None, stats: LinkStats) -> None:
         if str(p) in out_set:
             continue
         art = _artifact(conn, host, str(p))
-        v = _current_version(conn, art, start) if art else None
+        v = _current_version(conn, art, fstart) if art else None
         if v:
             _add(conn, stats, run_id, v, "used", "argpath", CONFIDENCE["argpath"])
     if end is not None:
         for p in paths.generated:
             art = _artifact(conn, host, str(p))
-            v = _window_version(conn, art, start, end) if art else None
+            v = _window_version(conn, art, fstart, end) if art else None
             if v:
                 _add(conn, stats, run_id, v, "generated", "argpath", CONFIDENCE["argpath"])
         for prefix in paths.prefixes:
@@ -348,7 +353,7 @@ def _link_run(conn, run, reader: Reader | None, stats: LinkStats) -> None:
                 (host, _like_prefix(str(prefix)) + ".%"),
             )
             for (art,) in rows.fetchall():
-                v = _window_version(conn, art, start, end)
+                v = _window_version(conn, art, fstart, end)
                 if v:
                     _add(conn, stats, run_id, v, "generated", "argpath", CONFIDENCE["argpath"])
 
@@ -371,7 +376,7 @@ def _link_run(conn, run, reader: Reader | None, stats: LinkStats) -> None:
             " AND fe.version_id NOT IN (SELECT version_id FROM edges WHERE role = 'generated'"
             "   AND method IN ('wrapper', 'argpath', 'readset') AND run_id != ?)"
             " ORDER BY fe.ts, fe.event_id",
-            (host, start, end, len(under), under, run_id),
+            (host, fstart, end, len(under), under, run_id),
         ).fetchall()
         # A background job that held a file open for writing owns all its changes.
         held = set()
@@ -394,13 +399,13 @@ def _link_run(conn, run, reader: Reader | None, stats: LinkStats) -> None:
             used, generated = found
             for path in used:
                 art = _artifact(conn, host, path)
-                v = _current_version(conn, art, start) if art else None
+                v = _current_version(conn, art, fstart) if art else None
                 if v:
                     _add(conn, stats, run_id, v, "used", "readset", CONFIDENCE["readset"])
             if end is not None:
                 for path in generated:
                     art = _artifact(conn, host, path)
-                    v = _window_version(conn, art, start, end) if art else None
+                    v = _window_version(conn, art, fstart, end) if art else None
                     if v:
                         _add(conn, stats, run_id, v, "generated", "readset", CONFIDENCE["readset"])
 
@@ -419,7 +424,8 @@ def _window_end(conn: sqlite3.Connection, run: sqlite3.Row) -> str | None:
         (run["host"], run["ts_start"], run["id"]),
     ).fetchone()[0]
     if nxt is not None and nxt < end:
-        end = max(nxt, run["ts_end"])
+        # The next run's file window opens CLOCK_SLACK early; stop this one there.
+        end = max(_plus(nxt, -CLOCK_SLACK), run["ts_end"])
     return end
 
 

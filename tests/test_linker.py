@@ -409,3 +409,19 @@ def test_background_job_started_just_after_the_writer_does_not_claim_its_output(
     )
     assert ("generated", "summary.txt", "a", "window") in edges(conn, "python summarize.py")
     assert not any(p == "summary.txt" for _, p, _, _ in edges(conn, "python simulate.py"))
+
+
+def test_coarse_mtime_just_before_start_belongs_to_the_run(store):
+    """Kernel file times lag the real clock by up to a tick, so an output written at
+    once can be stamped a few ms before the command's recorded start (seen on the
+    workstation: `printf ... > params.txt` mtime 1 ms before ts_start)."""
+    conn, load = store
+    load(
+        fev("params.txt", 9.999, "a", "created"),
+        cmd("printf 'x = 1' > params.txt", 10, 10.01),
+        cmd("cat params.txt", 12, 12.1),
+    )
+    assert edges(conn, "printf 'x = 1' > params.txt") == {
+        ("generated", "params.txt", "a", "argpath")
+    }
+    assert edges(conn, "cat params.txt") == {("used", "params.txt", "a", "argpath")}

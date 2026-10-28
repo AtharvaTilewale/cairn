@@ -83,7 +83,7 @@ def test_wrapped_run_inputs_come_from_argpath(ctx):
     FileTracker(
         IgnoreRules(root), EventWriter(ctx.home / "events", "synth", "tester"), ctx.home / "objects"
     ).scan(root)
-    time.sleep(0.01)
+    time.sleep(0.05)  # beyond the linker's CLOCK_SLACK
     assert run_wrapped(ctx, [PY, "copy.py", "in.csv", "out.csv"], cwd=root) == 0
     conn = load(ctx.home)
     assert ("used", "in.csv", "argpath", 0.9) in edge_rows(conn)
