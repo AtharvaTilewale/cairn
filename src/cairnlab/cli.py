@@ -711,11 +711,18 @@ def entry(
         raise typer.Exit(1)
 
 
+HostOpt = Annotated[
+    str | None,
+    typer.Option(help="Host the file is on (e.g. workstation); default: this machine."),
+]
+
+
 @app.command()
 def trace(
     path: Annotated[str, typer.Argument(help="File (or A:<version>) to explain.")],
     at: Annotated[str | None, typer.Option(help="The version current at this time.")] = None,
     sha: Annotated[str | None, typer.Option(help="The version with this hash prefix.")] = None,
+    host: HostOpt = None,
     as_json: Annotated[bool, typer.Option("--json", help="Machine-readable output.")] = False,
 ) -> None:
     """Show the chain of runs and inputs that produced a file, and how to regenerate it."""
@@ -723,19 +730,8 @@ def trace(
     conn = db.connect(config.db_path(home))
     db.migrate(conn)
     tz = config.timezone(home)
+    vid = _resolve_target(conn, path, at, sha, host)
     host = config.local_host()
-    if path.startswith("A:"):
-        vid = path[2:]
-    else:
-        at_ts = normalize_ts(at) if at else None
-        vid = None
-        for candidate in dict.fromkeys([os.path.abspath(path), str(Path(path).resolve())]):
-            vid = resolve_version(conn, host, candidate, at=at_ts, sha=sha)
-            if vid:
-                break
-    if not vid or graph_node(conn, vid) is None:
-        err.print(f"[red]No recorded version of {path!r}[/red] on {host}.")
-        raise typer.Exit(1)
     t = trace_graph(conn, vid)
     if as_json:
         sys.stdout.write(json.dumps(t.to_dict(), indent=1) + "\n")
@@ -810,14 +806,35 @@ def _trace_tree(t, tz, root: Path | None):
     return tree
 
 
-def _resolve_target(conn, path: str, at: str | None, sha: str | None) -> str:
-    host = config.local_host()
+def _resolve_target(
+    conn, path: str, at: str | None, sha: str | None, host: str | None = None
+) -> str:
+    """The version ``path`` names: ``A:<id>``, or a file on ``host`` (default: here)."""
+    local = config.local_host()
+    host = host or local
     if path.startswith("A:"):
         vid = path[2:]
     else:
-        vid = None
         at_ts = normalize_ts(at) if at else None
-        for candidate in dict.fromkeys([os.path.abspath(path), str(Path(path).resolve())]):
+        if host == local:
+            candidates = [os.path.abspath(path), str(Path(path).resolve())]
+        elif path.startswith("/"):
+            candidates = [path]
+        else:  # another machine's file: match the end of its path, if unique
+            escaped = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            rows = conn.execute(
+                "SELECT path FROM artifacts WHERE host = ? AND (path = ? OR path LIKE ?"
+                " ESCAPE '\\')",
+                (host, path, "%/" + escaped),
+            ).fetchall()
+            candidates = [r[0] for r in rows] if len(rows) == 1 else []
+            if len(rows) > 1:
+                err.print(f"[red]{path!r} matches {len(rows)} files on {host}:[/red]")
+                for (p,) in rows[:10]:
+                    err.print(f"  {p}", markup=False)
+                raise typer.Exit(1)
+        vid = None
+        for candidate in dict.fromkeys(candidates):
             vid = resolve_version(conn, host, candidate, at=at_ts, sha=sha)
             if vid:
                 break
@@ -834,6 +851,7 @@ def reproduce(
     at: Annotated[str | None, typer.Option(help="The version current at this time.")] = None,
     sha: Annotated[str | None, typer.Option(help="The version with this hash prefix.")] = None,
     rel_tol: Annotated[float, typer.Option(help="Tolerance for numbers.")] = 1e-6,
+    host: HostOpt = None,
     keep_scratch: Annotated[
         bool, typer.Option("--keep-scratch", help="Keep the scratch directories afterwards.")
     ] = False,
@@ -847,7 +865,7 @@ def reproduce(
     home = _require_home()
     conn = db.connect(config.db_path(home))
     db.migrate(conn)
-    vid = _resolve_target(conn, path, at, sha)
+    vid = _resolve_target(conn, path, at, sha, host)
     try:
         client = Client(home=home)
     except LLMError as exc:

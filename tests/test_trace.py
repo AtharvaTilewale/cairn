@@ -101,3 +101,25 @@ def test_cli_trace(chain, tmp_path, monkeypatch):
     data = json.loads(js.output)
     assert len(data["steps"]) == 4 and data["target"]["path"].endswith("fig.png")
     assert runner.invoke(app, ["trace", f"{ROOT}/unknown.png"]).exit_code == 1
+
+
+def test_cli_trace_a_file_from_another_host(chain, tmp_path, monkeypatch):
+    """On the hub, files synced from the workstation are traced with --host."""
+    from cairnlab.cli import app
+
+    home = tmp_path / "h" / ".cairn"
+    home.mkdir(parents=True)
+    (home / "cairn.db").symlink_to(tmp_path / "cairn.db")
+    monkeypatch.setenv("CAIRN_HOME", str(home))
+    monkeypatch.setenv("CAIRN_HOST", "hub")
+    runner = CliRunner()
+    res = runner.invoke(app, ["trace", f"{ROOT}/fig.png"])
+    assert res.exit_code == 1 and "on hub" in res.output
+    res = runner.invoke(app, ["trace", "--host", "hp", f"{ROOT}/fig.png"])
+    assert res.exit_code == 0, res.output
+    assert "python plot.py fit.json --out fig.png" in res.output
+    # A path relative to the project matches by suffix when that is unique.
+    res = runner.invoke(app, ["trace", "--host", "hp", "fig.png"])
+    assert res.exit_code == 0, res.output
+    assert "python gen.py --out data.csv" in res.output
+    assert runner.invoke(app, ["trace", "--host", "hp", "nope.png"]).exit_code == 1
