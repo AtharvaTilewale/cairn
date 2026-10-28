@@ -99,6 +99,53 @@ def _retryable(exc: Exception, backend: str = "spark") -> bool:
     return False
 
 
+_DEFAULTS = {"string": "", "array": [], "object": {}, "number": 0, "integer": 0, "boolean": False}
+
+
+def conform(value: Any, schema: dict) -> Any:
+    """Make ``value`` fit a strict schema (objects, arrays, scalars; no recursion).
+
+    Missing keys get empty defaults, unknown keys are dropped, array items of the wrong
+    shape are dropped, and a value of the wrong type becomes the type's default. Used
+    for models that are asked for JSON in the prompt rather than held to a grammar.
+    """
+    kind = schema.get("type")
+    if kind == "object":
+        if not isinstance(value, dict):
+            value = {}
+        props = schema.get("properties", {})
+        return {k: conform(value.get(k), sub) for k, sub in props.items()}
+    if kind == "array":
+        if not isinstance(value, list):
+            return []
+        item = schema.get("items", {})
+        want = {"object": dict, "array": list, "string": str}.get(item.get("type"))
+        return [conform(v, item) for v in value if want is None or isinstance(v, want)]
+    if kind == "string":
+        return value if isinstance(value, str) else ""
+    if kind in ("number", "integer"):
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+        return value if ok else 0
+    if kind == "boolean":
+        return value if isinstance(value, bool) else False
+    return value if value is not None else _DEFAULTS.get(kind)
+
+
+def _with_schema(messages: list[dict], schema: dict) -> list[dict]:
+    """A copy of ``messages`` whose system prompt ends with the JSON schema to follow."""
+    rule = (
+        "\n\nReply with one JSON object and nothing else. It must follow this JSON"
+        " Schema exactly (every listed key present, no other keys):\n"
+        + json.dumps(schema, indent=1)
+    )
+    out = [dict(m) for m in messages]
+    if out and out[0].get("role") == "system" and isinstance(out[0].get("content"), str):
+        out[0]["content"] += rule
+    else:
+        out.insert(0, {"role": "system", "content": rule.strip()})
+    return out
+
+
 class Client:
     """Chat and structured-output calls with retries and a usage log."""
 
@@ -159,6 +206,15 @@ class Client:
         **kw: Any,
     ) -> dict:
         """Completion constrained to a strict JSON schema; returns the parsed object."""
+        if self.backend == "glimmer":
+            # No grammar: llama.cpp's JSON-schema sampler stalled mid-entry on a real
+            # prompt (one token, all cores busy, minutes). The schema goes into the system
+            # prompt and the reply is made to fit it in code.
+            text = self._call(purpose, _with_schema(messages, schema), None, **kw)
+            out = extract_json(text)
+            if out is None:
+                raise LLMError(f"{purpose}: model did not return a JSON object")
+            return conform(out, schema)
         fmt = {
             "type": "json_schema",
             "json_schema": {"name": schema_name, "schema": schema, "strict": True},

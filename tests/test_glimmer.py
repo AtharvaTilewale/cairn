@@ -118,7 +118,11 @@ def test_structured_against_glimmer_server(stub, tmp_path):
     req = stub.requests[0]
     assert req["model"] == "muse-glimmer" and req["temperature"] == 1.0
     assert req["top_p"] == 0.95 and req["top_k"] == 64
-    assert req["response_format"]["type"] == "json_schema"
+    # No grammar: llama.cpp's JSON-schema sampler stalled mid-entry on the workstation
+    # (one token, 6 cores busy, > 3 min). The schema goes into the system prompt instead.
+    assert "response_format" not in req
+    assert req["messages"][0]["role"] == "system"
+    assert '"additionalProperties": false' in req["messages"][0]["content"]
     assert "reasoning_effort" not in req
     c.structured(purpose="t", messages=[], schema_name="T", schema=SCHEMA, reasoning_effort="low")
     assert stub.requests[1]["chat_template_kwargs"] == {"reasoning_strength": "low"}
@@ -248,3 +252,52 @@ def test_glimmer_url_from_user_env_file_and_empty_means_default(tmp_path, monkey
     env.write_text("CAIRN_GLIMMER_BASE_URL=http://127.0.0.1:9999/v1\n")
     assert str(Client(backend="glimmer")._oai.base_url).rstrip("/") == "http://127.0.0.1:9999/v1"
     monkeypatch.delenv("CAIRN_GLIMMER_BASE_URL", raising=False)
+
+
+NESTED = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "ids": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["text", "ids"],
+                "additionalProperties": False,
+            },
+        },
+        "notes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["title", "items", "notes"],
+    "additionalProperties": False,
+}
+
+
+def test_glimmer_output_is_made_to_fit_the_schema(stub, tmp_path):
+    stub.reply = json.dumps(
+        {
+            "items": [{"text": "a", "ids": ["R:1", 2]}, "stray string", {"ids": []}],
+            "notes": "one note",
+            "extra": 1,
+        }
+    )
+    c = Client(home=tmp_path, backend="glimmer")
+    sys_msg = {"role": "system", "content": "You write notebooks."}
+    out = c.structured(
+        purpose="t",
+        messages=[sys_msg, {"role": "user", "content": "q"}],
+        schema_name="T",
+        schema=NESTED,
+    )
+    assert out == {
+        "title": "",
+        "items": [{"text": "a", "ids": ["R:1"]}, {"text": "", "ids": []}],
+        "notes": [],
+    }
+    content = stub.requests[0]["messages"][0]["content"]
+    assert content.startswith("You write notebooks.") and '"title"' in content
+    assert sys_msg["content"] == "You write notebooks."  # caller's messages untouched
