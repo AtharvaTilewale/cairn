@@ -260,3 +260,42 @@ def test_note_falls_back_to_a_running_job_when_nothing_finished(tmp_path):
     }
     conn = load(tmp_path, {"e.jsonl": [start, note(1, "2026-10-28T10:05:00.000Z", "md running")]})
     assert attached(conn)["md running"] == "gmx mdrun"
+
+
+def test_note_skips_a_background_job_that_finished_during_the_last_command(tmp_path):
+    """synthlab flake: a --bg job ends while the next command runs, just before the note."""
+    from ulid import ULID
+
+    rid = str(ULID())
+    start = {
+        "v": 1,
+        "type": "run_start",
+        "id": f"{rid}-start",
+        "run_id": rid,
+        "pid": 1,
+        "monitor_pid": 1,
+        "session": "S",
+        "host": "hp",
+        "user": "t",
+        "cwd": "/p",
+        "cmd": "python simulate.py",
+        "ts_start": "2026-10-28T10:00:00.000Z",
+    }
+    end = {
+        "v": 1,
+        "type": "run_end",
+        "id": f"{rid}-end",
+        "run_id": rid,
+        "host": "hp",
+        "user": "t",
+        "exit": 0,
+        "ts_end": "2026-10-28T10:00:03.500Z",
+        "wrapper": {},
+    }
+    last = cmd(1, "2026-10-28T10:00:02.000Z")
+    last["ts_end"] = "2026-10-28T10:00:03.200Z"
+    conn = load(
+        tmp_path,
+        {"e.jsonl": [start, last, end, note(1, "2026-10-28T10:00:04.000Z", "poly fits better")]},
+    )
+    assert attached(conn)["poly fits better"] == "python step1.py"

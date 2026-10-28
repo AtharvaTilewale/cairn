@@ -414,17 +414,19 @@ def _attach_notes(conn: sqlite3.Connection) -> None:
 
 
 def _latest_run(conn, where: str, args, ts: str, window: timedelta) -> str | None:
-    """The run a note typed at ``ts`` explains: the last one that finished before it.
+    """The run a note typed at ``ts`` explains: the last one started among those that
+    finished before it (the command the user typed last).
 
     A background job still running when the note is typed is not "the last command",
-    even if its monitor recorded a later start; it is only chosen when nothing
-    finished before the note.
+    even if its monitor recorded a later start, and neither is an older job that
+    happened to finish just before the note; a running job is only chosen when
+    nothing finished before the note.
     """
     args = args if isinstance(args, tuple) else (args,)
     earliest = format_ts(datetime.fromisoformat(ts) - window)
     row = conn.execute(
         f"SELECT id FROM runs WHERE {where} AND ts_end IS NOT NULL AND ts_end <= ?"
-        " AND ts_start >= ? ORDER BY ts_end DESC LIMIT 1",
+        " AND ts_start >= ? ORDER BY ts_start DESC LIMIT 1",
         (*args, ts, earliest),
     ).fetchone()
     if row is None:

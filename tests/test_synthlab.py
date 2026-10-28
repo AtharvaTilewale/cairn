@@ -1,5 +1,6 @@
 """synthlab end to end: real watcher, real hook, ingest, linking, metrics (about 20 s)."""
 
+import json
 import shutil
 
 import pytest
@@ -20,7 +21,7 @@ def test_synthlab_capture_is_complete(tmp_path):
     build(project)
     play(project, tmp_path / "home")
     m = compute(project)
-    assert m["ok"], m
+    assert m["ok"], json.dumps(m, default=str)
     assert m["run_recall"] == 1.0 and m["run_precision"] == 1.0
     assert m["fit_json_versions"] == 3 and m["params_versions"] == 3
     # Linking without readset (no network in tests): precision 1.0; recall misses only
