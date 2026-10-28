@@ -41,8 +41,11 @@ own GPU.
   approval, replay, verify); ask (tool calling over the record, cited answers); the
   weekly supervisor report.
 - **muse-voice-transcribe-1.0**: push-to-talk voice notes from a keyboard shortcut.
-- **Muse Glimmer (open weights)**: private mode on our own hardware through
-  llama.cpp: `<tokens/s measured on the 8 GB GPU workstation>`.
+- **Muse Glimmer (open weights)**: private mode on our own hardware. Muse Glimmer
+  30B (Q4_K_M GGUF) under llama.cpp on a lab workstation's 8 GB GPU, 20
+  layers on the GPU and the rest in RAM: 2.2 tokens/s generation, 270 tokens/s prompt
+  processing. It wrote a complete cited notebook entry end to end (6.8K tokens in,
+  6.6K out, 50 minutes), so private entries run overnight with `cairn entry --queue`.
 
 The models never have the last word on facts: citations are validated against the
 record, faithfulness is verified in code, and reproduction verdicts come from
@@ -61,7 +64,7 @@ comparing files.
   recorded from its first blind run: capture 22/22 runs, provenance edges precision
   and recall 1.0, entry claims 25 supported / 0 unsupported, 3 of 4 files reproduced
   byte-identically.
-- 348 tests; a ~1.3 ms per-command shell hook that works under `set -u`, restores the
+- 358 tests; a ~1.3 ms per-command shell hook that works under `set -u`, restores the
   user's prompt hooks exactly and never edits dotfiles.
 
 ## Theme: Build for Your World
@@ -77,8 +80,12 @@ modified.
   scratch → deterministic verification; it found inputs a script names only in its
   code and restored the versions that existed at run time).
 - **Best Build on Meta Open Weight Models**: private mode on Muse Glimmer,
-  self-hosted with llama.cpp on the workstation. `<confirm it ran end to end and add
-  tokens/s>`
+  self-hosted with llama.cpp on a shared lab workstation (8 GB GPU, partial offload,
+  2.2 tokens/s), verified end to end: a full cited entry with nothing leaving our
+  machines. Two llama.cpp behaviours shaped the client: the JSON-schema grammar stalled
+  on a real entry prompt (so the schema goes in the prompt and the reply is made to fit
+  in code), and a server without a vision projector rejects images (so the entry
+  falls back to text at once).
 
 ## Links
 
