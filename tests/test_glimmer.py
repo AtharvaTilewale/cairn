@@ -40,10 +40,15 @@ class Stub:
                     for m in body["messages"]
                 )
                 if stub.reject_images and has_image:
-                    self.send_response(400)
+                    # What llama-server (b10353+, no --mmproj) actually returns: a 500.
+                    self.send_response(500)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
-                    self.wfile.write(b'{"error": {"message": "image input is not supported"}}')
+                    self.wfile.write(
+                        b'{"error": {"code": 500, "message": "image input is not supported -'
+                        b' hint: if this is unexpected, you may need to provide the mmproj",'
+                        b' "type": "server_error"}}'
+                    )
                     return
                 reply = stub.reply(body) if callable(stub.reply) else stub.reply
                 out = {

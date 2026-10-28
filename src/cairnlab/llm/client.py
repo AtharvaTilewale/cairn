@@ -91,6 +91,10 @@ def _retryable(exc: Exception, backend: str = "spark") -> bool:
     if isinstance(exc, openai.APIConnectionError):
         return True
     if isinstance(exc, openai.APIStatusError):
+        # llama-server without a vision projector rejects images with a 500; retrying
+        # cannot help, and the entry pipeline falls back to text at once.
+        if "not supported" in str(exc):
+            return False
         return exc.status_code == 429 or exc.status_code >= 500
     return False
 
