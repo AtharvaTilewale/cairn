@@ -90,7 +90,7 @@ def _require_home() -> Path:
 
 
 def _require_store() -> Path:
-    """The store to append events to. Spokes (workstation, the cluster) have no database."""
+    """The store to append events to. Spokes (other machines) have no database."""
     home = config.find_home()
     if home is None or not home.is_dir():
         err.print("[red]No Cairn store:[/red] set CAIRN_HOME or run [bold]cairn init[/bold].")
@@ -349,10 +349,13 @@ def _file_tracker(home: Path, roots: RootOpt) -> tuple[FileTracker, list[Path]]:
 
 @app.command()
 def watch(root: RootOpt = None) -> None:
-    """Run the file watcher in the foreground (HP, workstation; never the cluster). Ctrl-C stops."""
-    if config.is_eddie():
-        err.print("[red]cairn watch never runs on the cluster[/red] (no daemons on login nodes).")
-        err.print("Use [bold]cairn scan[/bold]; [bold]cairn sync cluster[/bold] runs it for you.")
+    """Run the file watcher in the foreground (never on HPC login nodes). Ctrl-C stops."""
+    if config.no_daemons():
+        err.print(
+            "[red]cairn watch does not run here[/red] (CAIRN_NO_DAEMON is set: no daemons"
+            " on login nodes)."
+        )
+        err.print("Use [bold]cairn scan[/bold] for a one-shot fingerprint pass instead.")
         raise typer.Exit(2)
     home = _require_store()
     tracker, roots = _file_tracker(home, root)
@@ -388,7 +391,7 @@ def scan(
     ] = None,
     root: RootOpt = None,
 ) -> None:
-    """One-shot fingerprint pass that exits immediately (used on the cluster by sync)."""
+    """One-shot fingerprint pass that exits immediately (for machines where no watcher may run)."""
     home = _require_store()
     tracker, roots = _file_tracker(home, root)
     since_epoch = None

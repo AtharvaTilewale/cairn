@@ -72,11 +72,12 @@ def local_host() -> str:
     return user_default("CAIRN_HOST") or socket.gethostname().split(".")[0]
 
 
-def is_eddie() -> bool:
-    """True on the an HPC cluster, where no daemons may run."""
-    if os.environ.get("CAIRN_NO_DAEMON"):
-        return True
-    return socket.getfqdn().endswith(".cluster.example.org")
+def no_daemons() -> bool:
+    """True where long-lived processes are not allowed (e.g. HPC login nodes).
+
+    Set ``CAIRN_NO_DAEMON=1`` in such a shell; there the hook only appends JSONL.
+    """
+    return bool(os.environ.get("CAIRN_NO_DAEMON"))
 
 
 def project_root(home: Path) -> Path | None:

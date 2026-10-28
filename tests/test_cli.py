@@ -162,13 +162,13 @@ def test_scan_rejects_bad_since(project, monkeypatch):
     assert runner.invoke(app, ["scan", "--since", "yesterday"]).exit_code == 2
 
 
-def test_watch_refuses_on_eddie(project, monkeypatch):
+def test_watch_refuses_where_no_daemons_may_run(project, monkeypatch):
     runner.invoke(app, ["init"])
     monkeypatch.setenv("CAIRN_USER", "tester")
     monkeypatch.setenv("CAIRN_NO_DAEMON", "1")
     result = runner.invoke(app, ["watch"])
     assert result.exit_code == 2
-    assert "never runs on the cluster" in result.output
+    assert "does not run here" in result.output
 
 
 def test_watch_and_scan_work_in_a_spoke_store(project, tmp_path, monkeypatch):

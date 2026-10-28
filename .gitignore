@@ -20,3 +20,6 @@ dist/
 .vscode/
 .claude/
 *.swp
+
+# Internal dev notes (machine and account details): kept local, never published
+CLAUDE.md

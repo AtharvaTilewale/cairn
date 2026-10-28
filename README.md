@@ -186,7 +186,7 @@ ran under, and whether each input on disk still matches what was used.
 
 ## Several machines
 
-The HP is the hub; other machines (spokes) record into `~/.cairn-<user>` and are
+One machine is the hub; other machines (spokes) record into `~/.cairn-<user>` and are
 pulled over SSH. Define them in `~/.config/cairn/hosts.toml`:
 
 ```toml
