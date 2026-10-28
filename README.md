@@ -201,11 +201,33 @@ cairn sync workstation --dry-run
 ```
 
 Sync only reads from the spoke (no deletes, nothing written there). On a shared
-account, keep everything under `~/.cairn-<user>`: install Cairn into a venv there
-(`python3 -m venv ~/.cairn-alice/venv`), then in each terminal
-`export CAIRN_USER=alice CAIRN_HOME=~/.cairn-alice CAIRN_HOST=workstation` and
-`eval "$(~/.cairn-alice/venv/bin/cairn activate)"`. Nothing touches the account's
-dotfiles. Run `cairn watch --root <project>` there to fingerprint files too.
+account, keep everything under `~/.cairn-<user>`. If the system Python is older than
+3.11, Cairn can live in a private conda prefix with its own package cache (the
+account's own conda envs are untouched):
+
+```bash
+git clone https://github.com/AtharvaTilewale/cairn ~/.cairn-alice/src/cairn
+export CONDA_PKGS_DIRS=~/.cairn-alice/pkgs
+conda create -y -p ~/.cairn-alice/env python=3.12 pip
+~/.cairn-alice/env/bin/pip install -e ~/.cairn-alice/src/cairn
+```
+
+Then, in each terminal there:
+
+```bash
+export CAIRN_USER=alice CAIRN_HOME=~/.cairn-alice CAIRN_HOST=workstation
+export PATH=~/.cairn-alice/env/bin:$PATH
+eval "$(cairn activate)"
+cairn watch --root ~/project     # in tmux: fingerprints that project's files
+```
+
+Nothing touches the account's dotfiles. A spoke store has no database; the hub
+ingests what sync pulls. Files from a spoke are traced on the hub with `--host`:
+
+```bash
+cairn trace --host workstation md/rmsd.xvg     # a unique path suffix is enough
+cairn reproduce --host workstation results/summary.txt
+```
 
 ## Notebook entries
 
@@ -266,36 +288,43 @@ cairn entry --queue --backend glimmer     # every recent day with runs but no en
 
 Glimmer runs behind any OpenAI-compatible server (llama.cpp, Ollama, vLLM, Modal).
 Cairn follows the model card: temperature 1.0 / top-p 0.95 / top-k 64, and
-`reasoning_strength` for effort. On the workstation (shared account: everything stays
-inside `~/.cairn-alice`, including the Hugging Face cache):
+`reasoning_strength` for effort. For Glimmer, Cairn puts the JSON schema in the
+prompt and makes the reply fit it in code, instead of sending a grammar: llama.cpp's
+schema sampler stalled on a real entry prompt in our tests.
+
+These are the commands that ran on the workstation (shared account: everything stays
+inside `~/.cairn-alice`; if the system cmake is too old, a newer one comes from pip):
 
 ```bash
 cd ~/.cairn-alice
-git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp   # needs build >= b10353
-cmake -B build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=ON
-cmake --build build --config Release -j --target llama-server
-export HF_HOME=~/.cairn-alice/hf
-~/.cairn-alice/venv/bin/pip install huggingface_hub
-~/.cairn-alice/venv/bin/hf download meta-models/Muse-Glimmer-30B-GGUF \
-    --local-dir ~/.cairn-alice/models/glimmer \
-    --include "Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf" \
-    --include "mmproj-Muse-Glimmer-30B-Q4_K_M.gguf"          # ~18 GB
-./build/bin/llama-server \
-    -m ~/.cairn-alice/models/glimmer/Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf \
-    --mmproj ~/.cairn-alice/models/glimmer/mmproj-Muse-Glimmer-30B-Q4_K_M.gguf \
-    -a muse-glimmer -ngl 12 -t 16 -c 131072 -np 1 \
-    --host 127.0.0.1 --port 8080 --jinja --temp 1.0 --top-p 0.95 --top-k 64
+~/.cairn-alice/env/bin/pip install cmake ninja
+export PATH=~/.cairn-alice/env/bin:/usr/local/cuda/bin:$PATH
+git clone --depth 1 https://github.com/ggml-org/llama.cpp && cd llama.cpp  # >= b10353
+cmake -B build -G Ninja -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 \
+    -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j 24 --target llama-server
+cd ~/.cairn-alice/models && curl -L -C - -O \
+  https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/main/Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf
+cd ~/.cairn-alice && nohup llama.cpp/build/bin/llama-server \
+    -m models/Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf \
+    -a muse-glimmer -ngl 20 -t 16 -c 32768 -np 1 \
+    --host 127.0.0.1 --port 8080 --jinja --temp 1.0 --top-p 0.95 --top-k 64 \
+    > glimmer.log 2>&1 & echo $! > glimmer.pid
 ```
 
-The 8 GB GPU has 8 GB, so `-ngl` offloads only some layers (raise it until
-`nvidia-smi` shows ~7 GB used); the rest runs from RAM on 16 threads. Keep `-np 1`:
-llama-server splits `-c` across slots, and a starved slot returns nothing. From the
-hub, reach it through SSH and point Cairn at it:
+With an 8 GB GPU, `-ngl 20` puts 20 layers on it (~7 GB) and the rest runs
+from RAM on 16 threads. Measured: prompt processing ~270 tokens/s, generation
+**2.2–2.3 tokens/s** (1.9 with `-ngl 12`), so Glimmer entries are an overnight job
+(`--queue`). Keep `-np 1`: llama-server splits `-c` across slots, and a starved slot
+returns nothing. Without the 1.4 GB `mmproj` file the server rejects images and Cairn
+writes the entry from text (add `--mmproj` for figures). Stop it with
+`kill $(cat ~/.cairn-alice/glimmer.pid)` so the GPU is free for other work.
+
+From the hub, reach it through SSH and point Cairn at it:
 
 ```bash
-ssh -N -L 8080:127.0.0.1:8080 workstation &
-export CAIRN_GLIMMER_BASE_URL=http://127.0.0.1:8080/v1
-cairn entry yesterday --backend glimmer --no-check
+ssh -f -N -L 8080:127.0.0.1:8080 workstation
+cairn entry yesterday --backend glimmer --no-check   # default URL http://127.0.0.1:8080/v1
 cairn status                 # "Model usage" shows Glimmer's measured tokens/s
 ```
 
