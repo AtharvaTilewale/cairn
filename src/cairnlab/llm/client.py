@@ -31,7 +31,9 @@ GLIMMER_MODEL = "muse-glimmer"
 GLIMMER_DEFAULT_URL = "http://127.0.0.1:8080/v1"  # llama-server; Ollama is :11434
 GLIMMER_MIN_TEMPERATURE = 0.2  # Glimmer must never run at temperature 0
 REQUEST_TIMEOUT_S = 120.0  # per attempt; the SDK default (10 min) hides a dead network
-GLIMMER_TIMEOUT_S = 1800.0
+# Partial GPU offload on the workstation measured ~2.2 tokens/s: an entry with reasoning
+# can take an hour or more, so allow 4 h per call (meant for overnight `--queue`).
+GLIMMER_TIMEOUT_S = 4 * 3600.0
 
 # USD per million tokens: (input, cached input, output).
 PRICES = {SPARK_MODEL: (1.25, 0.15, 4.25)}
@@ -82,8 +84,11 @@ def extract_json(text: str) -> dict | None:
     return None
 
 
-def _retryable(exc: Exception) -> bool:
-    if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
+def _retryable(exc: Exception, backend: str = "spark") -> bool:
+    if isinstance(exc, openai.APITimeoutError):
+        # A slow self-hosted model would regenerate from scratch on every retry.
+        return backend == "spark"
+    if isinstance(exc, openai.APIConnectionError):
         return True
     if isinstance(exc, openai.APIStatusError):
         return exc.status_code == 429 or exc.status_code >= 500
@@ -208,7 +213,7 @@ class Client:
             try:
                 resp = self._oai.chat.completions.create(**kwargs)
             except Exception as exc:  # noqa: BLE001 - classified below
-                if _retryable(exc) and attempt < self.max_retries:
+                if _retryable(exc, self.backend) and attempt < self.max_retries:
                     wait = delay * (1 + random.random() * 0.5)
                     log.info("%s: %s, retrying in %.1fs", purpose, type(exc).__name__, wait)
                     self.sleep(wait)

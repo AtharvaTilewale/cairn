@@ -129,3 +129,20 @@ def test_missing_key_is_a_clear_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(LLMError, match="MODEL_API_KEY"):
         Client(home=tmp_path)
+
+
+def test_glimmer_never_retries_a_timeout(tmp_path):
+    """At ~2 tokens/s a retry regenerates from scratch for hours; fail instead."""
+    from cairnlab.llm.client import GLIMMER_TIMEOUT_S
+
+    req = httpx.Request("POST", "http://127.0.0.1:8080/v1/chat/completions")
+    oai, comp = fake([openai.APITimeoutError(request=req), "never"])
+    c = Client(home=tmp_path, backend="glimmer", openai_client=oai, sleep=lambda s: None)
+    with pytest.raises(LLMError, match="Timeout"):
+        c.chat(purpose="t", messages=[])
+    assert len(comp.calls) == 1
+    # Spark still retries timeouts (a dropped connection, not a slow model).
+    oai, comp = fake([openai.APITimeoutError(request=req), "ok"])
+    assert Client(openai_client=oai, sleep=lambda s: None).chat(purpose="t", messages=[]) == "ok"
+    # Long enough for an overnight entry at the measured ~2 tokens/s.
+    assert GLIMMER_TIMEOUT_S >= 4 * 3600
